@@ -9,13 +9,7 @@ from app.schemas import brief as brief_schema
 from app.schemas import submission as sub_schema
 from app.core import security
 
-# Create Tables upon startup
-models.Base.metadata.create_all(bind=session.engine)
-
-app = FastAPI(title="Brief Ecosystem - Production API")
-
 # --- DATABASE INITIALIZATION (MOCK DATA) ---
-# In production, this would be managed via a separate setup/migration script.
 def init_mock_data():
     db = session.SessionLocal()
     try:
@@ -40,7 +34,28 @@ def init_mock_data():
     finally:
         db.close()
 
-init_mock_data()
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # This runs when the server starts
+    print("🚀 Server starting up... Syncing database schema.")
+    try:
+        # 1. Create Tables (Safe to run multiple times)
+        models.Base.metadata.create_all(bind=session.engine)
+        # 2. Seed Mock Data
+        init_mock_data()
+        print("✅ Database ready.")
+    except Exception as e:
+        print(f"❌ Database error during startup: {e}")
+        # We don't raise the error here so the server can still start 
+        # and respond to health checks, even if DB is down.
+        
+    yield
+    # This runs when the server stops
+    print("🛑 Server shutting down.")
+
+app = FastAPI(title="Brief Ecosystem - Production API", lifespan=lifespan)
 
 @app.get("/")
 def read_root():
