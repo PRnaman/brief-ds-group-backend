@@ -11,11 +11,27 @@ from app.schemas import brief as brief_schema
 from app.schemas import user as user_schema
 from app.schemas import submission as sub_schema
 
-# --- DATABASE INITIALIZATION ---
-# This runs ONCE when the app starts to create your tables in PostgreSQL.
-models.Base.metadata.create_all(bind=session.engine)
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="MediaFlow DS Group - Brief Ecosystem")
+# --- DATABASE INITIALIZATION ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # This runs once when the app starts.
+    print("--- SERVER STARTING UP ---")
+    try:
+        print("Synchronizing Database Schema...")
+        models.Base.metadata.create_all(bind=session.engine)
+        print("✅ DATABASE SYNC SUCCESS")
+    except Exception as e:
+        print(f"❌ DATABASE SYNC FAILED: {str(e)}")
+        # We don't raise here so the app can at least start and let us debug via /
+    yield
+    print("--- SERVER SHUTTING DOWN ---")
+
+app = FastAPI(
+    title="MediaFlow DS Group - Brief Ecosystem",
+    lifespan=lifespan
+)
 
 # --- CORE CONCEPTS ---
 # 1. DATABASE CONNECTIVITY: 
