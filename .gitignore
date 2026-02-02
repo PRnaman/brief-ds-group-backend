@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing & Cloud Config
+check_db_status.py
+mock_data.json
+*.postman_collection.json
+
+# Git settings (Optional: keeping this is safer)
+# .gitignore
