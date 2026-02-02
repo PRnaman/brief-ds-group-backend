@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 
@@ -10,11 +10,9 @@ class HistoryTrailBase(BaseModel):
 class HistoryTrail(HistoryTrailBase):
     id: int
     user_name: str
-    user_role: str
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Submission Schemas
 class SubmissionBase(BaseModel):
@@ -22,46 +20,35 @@ class SubmissionBase(BaseModel):
     status: str
 
 class Submission(SubmissionBase):
-    id: int
+    id: str
     brief_id: str
+    version_number: int
     plan_file_name: Optional[str] = None
     plan_file_url: Optional[str] = None
-    submitted_at: datetime
+    submitted_at: Optional[datetime] = None
+    last_updated: datetime
     history: List[HistoryTrail] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class SubmissionSummary(BaseModel):
+    id: Optional[str] = None
     agencyId: str
     status: str
     submittedDate: Optional[str] = None
 
 class SubmissionDetail(SubmissionSummary):
     planFileName: Optional[str] = None
-    history: List[Dict[str, str]] = []
+    versionNumber: int
+    history: List[Dict[str, Any]] = []
 
 # Request Schemas for the Agency Workflow
 class UploadPlanRequest(BaseModel):
     file_url: str
-    
-    model_config = {
-        "populate_by_name": True,
-        "alias_generator": lambda s: "".join(
-            word.capitalize() if i > 0 else word for i, word in enumerate(s.split("_"))
-        ),
-    }
 
 class ColumnMapping(BaseModel):
     header_name: str
     mapped_field: str
-    
-    model_config = {
-        "populate_by_name": True,
-        "alias_generator": lambda s: "".join(
-            word.capitalize() if i > 0 else word for i, word in enumerate(s.split("_"))
-        ),
-    }
 
 class ValidateColumnsRequest(BaseModel):
     mappings: List[ColumnMapping]
@@ -76,12 +63,5 @@ class AddCommentRequest(BaseModel):
 # Request Schema for DS Review
 class ReviewSubmissionRequest(BaseModel):
     agency_id: str 
-    status: str
+    status: str # CLIENT_REVIEW, AGENCY_REVISION, APPROVED
     reason: Optional[str] = None
-
-    model_config = {
-        "populate_by_name": True,
-        "alias_generator": lambda s: "".join(
-            word.capitalize() if i > 0 else word for i, word in enumerate(s.split("_"))
-        ),
-    }
