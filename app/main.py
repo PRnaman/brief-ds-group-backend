@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from datetime import datetime
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import models, session
 from app.schemas import brief as brief_schema
@@ -20,6 +21,15 @@ async def lifespan(app: FastAPI):
     print("🛑 Server shutting down.")
 
 app = FastAPI(title="Brief Ecosystem - Production API", lifespan=lifespan)
+
+
+ 
+# CORS - Add this block RIGHT AFTER app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+ 
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
 
 @app.get("/")
 def read_root():
