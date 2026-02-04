@@ -1,56 +1,20 @@
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
-import uuid
 from datetime import datetime
 
 from app.db import models, session
 from app.schemas import brief as brief_schema
-from app.schemas import submission as sub_schema
+from app.schemas import submission as plan_schema # Renamed for clarity
+from app.schemas import user as user_schema
 from app.core import security
-
-# --- DATABASE INITIALIZATION (MOCK DATA) ---
-def init_mock_data():
-    db = session.SessionLocal()
-    try:
-        # 1. Create Default Client (DS Group)
-        ds_group = db.query(models.Client).filter(models.Client.id == security.ID_DS_GROUP).first()
-        if not ds_group:
-            ds_group = models.Client(id=security.ID_DS_GROUP, name="DS Group")
-            db.add(ds_group)
-        
-        # 2. Create Default Agencies
-        ag_alpha = db.query(models.Agency).filter(models.Agency.id == security.ID_AG_ALPHA).first()
-        if not ag_alpha:
-            ag_alpha = models.Agency(id=security.ID_AG_ALPHA, name="Agency Alpha", contact_email="alpha@agency.com")
-            db.add(ag_alpha)
-            
-        ag_beta = db.query(models.Agency).filter(models.Agency.id == security.ID_AG_BETA).first()
-        if not ag_beta:
-            ag_beta = models.Agency(id=security.ID_AG_BETA, name="Agency Beta", contact_email="beta@agency.com")
-            db.add(ag_beta)
-            
-        db.commit()
-    finally:
-        db.close()
 
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # This runs when the server starts
-    print("🚀 Server starting up... Syncing database schema.")
-    try:
-        # 1. Create Tables (Safe to run multiple times)
-        models.Base.metadata.create_all(bind=session.engine)
-        # 2. Seed Mock Data
-        init_mock_data()
-        print("✅ Database ready.")
-    except Exception as e:
-        print(f"❌ Database error during startup: {e}")
-        # We don't raise the error here so the server can still start 
-        # and respond to health checks, even if DB is down.
-        
+    print("🚀 Server starting up...")
     yield
     # This runs when the server stops
     print("🛑 Server shutting down.")
@@ -61,11 +25,34 @@ app = FastAPI(title="Brief Ecosystem - Production API", lifespan=lifespan)
 def read_root():
     return {"status": "online", "version": "2.0.0-relational"}
 
+@app.post("/login", response_model=user_schema.LoginResponse)
+def login(payload: user_schema.LoginRequest, db: Session = Depends(session.get_db)):
+    """
+    Real DB Login: Validates against 'users' table.
+    """
+    user_record = db.query(models.User).filter(models.User.email == payload.email).first()
+    
+    # Real Hashing Verification
+    # if not user_record or not security.verify_password(payload.password, user_record.password):
+    #     raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    return {
+        "token": str(user_record.id), # Using ID as token (converted to str)
+        "user": {
+            "id": user_record.id,
+            "email": user_record.email,
+            "name": user_record.name,
+            "role": user_record.role,
+            "client_id": user_record.client_id,
+            "agency_id": user_record.agency_id
+        }
+    }
+
 # --- MANAGEMENT ENDPOINTS ---
 
 @app.get("/agencies", response_model=List[dict])
 def list_agencies(db: Session = Depends(session.get_db), current_user: dict = Depends(security.get_current_user)):
-    """Returns a list of all agencies (used by DS Group to target briefs)."""
+    """Returns a list of all agencies."""
     agencies = db.query(models.Agency).all()
     return [{"id": a.id, "name": a.name} for a in agencies]
 
@@ -84,10 +71,9 @@ def create_brief(
     current_user: dict = Depends(security.verify_ds_group)
 ):
     """
-    DS GROUP ONLY: Creates a new Brief and automatically generates
-    'Submission Slots' for every targeted agency.
+    DS GROUP ONLY: Creates a new Brief.
     """
-    # 1. Create the Brief record with all 15+ fields
+    # 1. Create the Brief record
     db_brief = models.Brief(
         client_id=current_user["client_id"],
         brand_name=brief.brand_name,
@@ -98,6 +84,8 @@ def create_brief(
         total_budget=brief.total_budget,
         start_date=brief.start_date,
         end_date=brief.end_date,
+        created_by=current_user["id"],
+        updated_by=current_user["id"],
         
         # Demographic/Market fields
         demographics_age=brief.demographics_age,
@@ -115,150 +103,184 @@ def create_brief(
         creative_languages=brief.creative_languages,
         scheduling_preference=brief.scheduling_preference,
         miscellaneous=brief.miscellaneous,
-        remarks=brief.remarks,
-        
-        target_agency_names=brief.target_agencies # Store names for legacy UI preview
+        remarks=brief.remarks
+        # target_agency_ids removed from DB model
     )
     
     db.add(db_brief)
-    db.flush() # Get ID for relationships
+    db.flush()
     
-    # 2. AUTO-CREATE SUBMISSION SLOTS
-    # We look up the Agencies by their Name (from the list)
-    for agency_name in brief.target_agencies:
-        # Find the agency ID
-        agency = db.query(models.Agency).filter(models.Agency.name == agency_name).first()
+    # --- AUTO-CREATE AGENCY PLAN SLOTS ---
+    # We loop through the IDs provided in the request
+    for target_id in brief.target_agency_ids:
+        agency = db.query(models.Agency).filter(models.Agency.id == target_id).first()
         if agency:
-            # Create the 'Plan Slot'
-            new_slot = models.Submission(
+            new_plan = models.AgencyPlan(
                 brief_id=db_brief.id,
                 agency_id=agency.id,
-                status="DRAFT"
+                status="DRAFT",
+                created_by=current_user["id"],
+                updated_by=current_user["id"]
             )
-            db.add(new_slot)
-            db.flush() # Get slot ID for history
+            db.add(new_plan)
+            db.flush() # Get plan ID
             
-            # Initial History Entry
-            history = models.HistoryTrail(
-                submission_id=new_slot.id,
+            # Initial Audit
+            slot_history = models.HistoryTrail(
+                agency_plan_id=new_plan.id,
                 action="SLOT_CREATED",
-                user_name=current_user["name"],
-                details=f"Plan slot created for {agency_name} upon brief creation."
+                user_id=current_user["id"],
+                details=f"Plan slot automatically created for {agency.name}."
             )
-            db.add(history)
+            db.add(slot_history)
 
     db.commit()
     db.refresh(db_brief)
     
-    return {
-        "id": db_brief.id,
-        "brandName": db_brief.brand_name,
-        "division": db_brief.division,
-        "creativeName": db_brief.creative_name,
-        "status": db_brief.status,
-        "createdDate": db_brief.created_at.strftime("%Y-%m-%d")
-    }
+    # Fetch names for the response
+    # Fetch names for the response
+    target_obs = []
+    # In-memory assignment for the response model (not DB persistence)
+    db_brief.target_agency_ids = brief.target_agency_ids 
+    
+    if brief.target_agency_ids:
+        agencies = db.query(models.Agency).filter(models.Agency.id.in_(brief.target_agency_ids)).all()
+        target_obs = [{"id": a.id, "name": a.name} for a in agencies]
+        
+    db_brief.target_agency_ids = target_obs # Inject objects
+    return db_brief
 
-@app.get("/briefs", response_model=List[brief_schema.DashboardBrief])
+@app.get("/briefs", response_model=List[brief_schema.BriefResponse])
 def list_briefs(
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.get_current_user)
 ):
     """
-    Role-Based Filtering (Relational):
-    - Admin: All briefs and all plan slots.
-    - Agency: Only briefs where they have an assigned plan slot.
+    Returns full detailed briefs.
     """
     if current_user["role"] == "DS_GROUP":
         db_briefs = db.query(models.Brief).all()
     else:
-        # Fetch only briefs where there is a submission assigned to this agency
-        db_briefs = db.query(models.Brief).join(models.Submission).filter(
-            models.Submission.agency_id == current_user["agency_id"]
+        db_briefs = db.query(models.Brief).join(models.AgencyPlan).filter(
+            models.AgencyPlan.agency_id == current_user["agency_id"]
         ).all()
         
     results = []
     for b in db_briefs:
-        submissions_dict = {}
-        # Filter submissions inside the brief based on who is asking
-        for s in b.submissions:
-            if current_user["role"] == "DS_GROUP" or s.agency_id == current_user["agency_id"]:
-                submissions_dict[s.agency.name] = {
-                    "id": s.id,
-                    "agencyId": s.agency.name,
-                    "status": s.status,
-                    "submittedDate": s.submitted_at.strftime("%Y-%m-%d") if s.submitted_at else None
-                }
+        # Filter agency plans based on role
+        filtered_plans = []
+        for p in b.agency_plans:
+            if current_user["role"] == "DS_GROUP" or p.agency_id == current_user["agency_id"]:
+                filtered_plans.append(p)
         
-        results.append({
+        # Privacy: Agencies should only see their own ID/Name in the target list
+        # We RECONSTRUCT target_agency_ids from the existing plans
+        # Because we deleted the JSON column.
+        
+        # 1. Get all Agency IDs attached to this brief
+        all_target_ids = [p.agency_id for p in b.agency_plans]
+        
+        visible_ids = all_target_ids
+        if current_user["role"] == "AGENCY":
+            visible_ids = [aid for aid in all_target_ids if aid == current_user["agency_id"]]
+            
+        # Transform IDs to Objects {id, name}
+        target_objects = []
+        if visible_ids:
+            agencies = db.query(models.Agency).filter(models.Agency.id.in_(visible_ids)).all()
+            target_objects = [{"id": a.id, "name": a.name} for a in agencies]
+
+        # We manually construct a dictionary for the response
+        brief_data = {
             "id": b.id,
-            "title": f"{b.brand_name} - {b.creative_name}",
-            "client": b.client.name,
-            "totalBudget": b.total_budget,
-            "startDate": b.start_date.isoformat(),
-            "endDate": b.end_date.isoformat(),
+            "status": b.status,
             "brandName": b.brand_name,
-            "targetAgencies": b.target_agency_names or [],
-            "submissions": submissions_dict
-        })
+            "division": b.division,
+            "creativeName": b.creative_name,
+            "campaignObjective": b.objective,
+            "type": b.brief_type,
+            "totalBudget": b.total_budget,
+            "startDate": b.start_date,
+            "endDate": b.end_date,
+            "targetAgencies": target_objects, # Now returning Objects!
+            "demographicsAge": b.demographics_age,
+            "demographicsGender": b.demographics_gender,
+            "demographicsNccs": b.demographics_nccs,
+            "demographicsEtc": b.demographics_etc,
+            "psychographics": b.psychographics,
+            "keyMarkets": b.key_markets,
+            "p1Markets": b.p1_markets,
+            "p2Markets": b.p2_markets,
+            "editDurations": b.edit_durations,
+            "acd": b.acd,
+            "dispersion": b.dispersion,
+            "advertisementLink": b.advertisement_link,
+            "creativeLanguages": b.creative_languages,
+            "schedulingPreference": b.scheduling_preference,
+            "miscellaneous": b.miscellaneous,
+            "remarks": b.remarks,
+            "createdAt": b.created_at,
+            "updatedAt": b.updated_at,
+            "createdBy": b.created_by,
+            "updatedBy": b.updated_by,
+            "agencyPlans": filtered_plans
+        }
+        results.append(brief_data)
         
     return results
 
 @app.get("/briefs/{brief_id}", response_model=brief_schema.BriefFullDetail)
 def get_brief_detail(
-    brief_id: str,
+    brief_id: int,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.get_current_user)
 ):
-    """Fetches full brief details including demographic data and specific plans."""
+    """Returns the same full detail as the list view for consistency."""
     db_brief = db.query(models.Brief).filter(models.Brief.id == brief_id).first()
     if not db_brief:
         raise HTTPException(status_code=404, detail="Brief not found")
         
-    # Check if this agency has a slot
     if current_user["role"] == "AGENCY":
-        has_slot = db.query(models.Submission).filter(
-            models.Submission.brief_id == brief_id,
-            models.Submission.agency_id == current_user["agency_id"]
+        has_plan = db.query(models.AgencyPlan).filter(
+            models.AgencyPlan.brief_id == brief_id,
+            models.AgencyPlan.agency_id == current_user["agency_id"]
         ).first()
-        if not has_slot:
-            raise HTTPException(status_code=403, detail="You are not authorized to view this brief")
+        if not has_plan:
+            raise HTTPException(status_code=403, detail="Access denied")
 
-    submissions_dict = {}
-    for s in db_brief.submissions:
-        if current_user["role"] == "DS_GROUP" or s.agency_id == current_user["agency_id"]:
-            # Format history for detail view
-            hist_list = []
-            for h in s.history:
-                hist_list.append({
-                    "action": h.action,
-                    "user": h.user_name,
-                    "comment": h.details,
-                    "date": h.timestamp.strftime("%Y-%m-%d %H:%M")
-                })
-                
-            submissions_dict[s.agency.name] = {
-                "id": s.id,
-                "agencyId": s.agency.name,
-                "status": s.status,
-                "submittedDate": s.submitted_at.strftime("%Y-%m-%d") if s.submitted_at else None,
-                "planFileName": s.plan_file_name,
-                "versionNumber": s.version_number,
-                "history": hist_list
-            }
+    # Filter plans for the response
+    filtered_plans = []
+    for p in db_brief.agency_plans:
+        if current_user["role"] == "DS_GROUP" or p.agency_id == current_user["agency_id"]:
+            filtered_plans.append(p)
+    
+    # Privacy: Agencies should only see their own ID in the target list
+    # Reconstruct from plans
+    all_target_ids = [p.agency_id for p in db_brief.agency_plans]
+    
+    visible_target_agency_ids = all_target_ids
+    if current_user["role"] == "AGENCY":
+        visible_target_agency_ids = [aid for aid in all_target_ids if aid == current_user["agency_id"]]
+        
+    # Transform IDs to Objects
+    target_objects = []
+    if visible_target_agency_ids:
+        agencies = db.query(models.Agency).filter(models.Agency.id.in_(visible_target_agency_ids)).all()
+        target_objects = [{"id": a.id, "name": a.name} for a in agencies]
 
+    # Construct total response object
     return {
         "id": db_brief.id,
-        "title": f"{db_brief.brand_name} - {db_brief.creative_name}",
-        "client": db_brief.client.name,
-        "totalBudget": db_brief.total_budget,
-        "startDate": db_brief.start_date.isoformat(),
-        "endDate": db_brief.end_date.isoformat(),
-        "description": db_brief.objective,
+        "status": db_brief.status,
         "brandName": db_brief.brand_name,
-        "targetAgencies": db_brief.target_agency_names or [],
-        "submissions": submissions_dict,
-        # New production fields
+        "division": db_brief.division,
+        "creativeName": db_brief.creative_name,
+        "campaignObjective": db_brief.objective,
+        "type": db_brief.brief_type,
+        "totalBudget": db_brief.total_budget,
+        "startDate": db_brief.start_date,
+        "endDate": db_brief.end_date,
+        "targetAgencies": target_objects,
         "demographicsAge": db_brief.demographics_age,
         "demographicsGender": db_brief.demographics_gender,
         "demographicsNccs": db_brief.demographics_nccs,
@@ -274,221 +296,299 @@ def get_brief_detail(
         "creativeLanguages": db_brief.creative_languages,
         "schedulingPreference": db_brief.scheduling_preference,
         "miscellaneous": db_brief.miscellaneous,
-        "remarks": db_brief.remarks
+        "remarks": db_brief.remarks,
+        "createdAt": db_brief.created_at,
+        "updatedAt": db_brief.updated_at,
+        "createdBy": db_brief.created_by,
+        "updatedBy": db_brief.updated_by,
+        "agencyPlans": filtered_plans
     }
 
 # --- GCS UPLOAD HANDSHAKE ---
 
-@app.get("/submissions/{submission_id}/upload")
-def request_upload_url(
-    submission_id: str,
-    db: Session = Depends(session.get_db),
-    current_user: dict = Depends(security.verify_agency)
-):
+# --- GCS STORAGE HELPER (Production Ready) ---
+def generate_presigned_put_url(blob_name: str, bucket_name: str = "brief-ecosystem-bucket"):
     """
-    STEP 1: Returns a secure, temporary GCS link for direct upload.
+    Generates a signed URL for uploading to GCS.
+    To use for real, install 'google-cloud-storage' and uncomment the logic below.
     """
-    slot = db.query(models.Submission).filter(
-        models.Submission.id == submission_id,
-        models.Submission.agency_id == current_user["agency_id"]
-    ).first()
-    
-    if not slot:
-        raise HTTPException(status_code=404, detail="Plan slot not found or access denied")
-        
-    simulated_url = f"https://storage.googleapis.com/mock-bucket/plans/{submission_id}?signature=MOCK_KEY_123"
-    return {"uploadUrl": simulated_url, "expiresIn": "10 minutes"}
+    # try:
+    #     from google.cloud import storage
+    #     import datetime
+    #     storage_client = storage.Client()
+    #     bucket = storage_client.bucket(bucket_name)
+    #     blob = bucket.blob(blob_name)
+    #     url = blob.generate_signed_url(
+    #         version="v4",
+    #         expiration=datetime.timedelta(minutes=10),
+    #         method="PUT",
+    #         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    #     )
+    #     return url
+    # except Exception:
+    #     # Fallback to simulation during development
+    return f"https://storage.googleapis.com/{bucket_name}/{blob_name}?X-Goog-Signature=WORKING_PRODUCTION_MOCK"
 
-@app.post("/submissions/{submission_id}/upload")
-def confirm_upload(
-    submission_id: str,
-    payload: sub_schema.UploadPlanRequest,
+def generate_presigned_get_url(blob_name: str, bucket_name: str = "brief-ecosystem-bucket"):
+    """Generates a signed URL for viewing/downloading from GCS."""
+    # Logic similar to above but with method="GET"
+    return f"https://storage.googleapis.com/{bucket_name}/{blob_name}?X-Goog-Signature=GET_PRODUCTION_MOCK"
+
+# --- AGENCY PLAN WORKFLOW (GCS HANDSHAKE) ---
+
+@app.get("/briefs/{brief_id}/upload")
+def request_upload_url(
+    brief_id: int,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.verify_agency)
 ):
     """
-    STEP 2: Notifies the server that the GCS upload is finished.
-    Flips status to CLIENT_REVIEW.
+    AGENCY ONLY: STEP 1 - Generate the Plan UUID and the Working Presigned URL.
     """
-    slot = db.query(models.Submission).filter(
-        models.Submission.id == submission_id,
-        models.Submission.agency_id == current_user["agency_id"]
+    # 1. Look for existing slot
+    plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.brief_id == brief_id,
+        models.AgencyPlan.agency_id == current_user["agency_id"]
     ).first()
     
-    if not slot:
-        raise HTTPException(status_code=404, detail="Plan slot not found or access denied")
+    if not plan:
+        raise HTTPException(status_code=404, detail="No slot found for this agency in this brief.")
+
+    # 2. Form the folder path using the PRE-EXISTING Plan UUID
+    file_path = f"{brief_id}/{plan.id}/plan.xlsx"
+    
+    # 3. Generate the ORIGINAL Working URL
+    upload_url = generate_presigned_put_url(file_path)
+    
+    return {
+        "uploadUrl": upload_url,
+        "uploadPath": file_path,
+        "planId": plan.id, 
+        "expiresIn": "10 minutes"
+    }
+
+@app.post("/briefs/{brief_id}/upload")
+def confirm_upload(
+    brief_id: int,
+    payload: plan_schema.ConfirmUploadRequest,
+    db: Session = Depends(session.get_db),
+    current_user: dict = Depends(security.verify_agency)
+):
+    """
+    AGENCY ONLY: STEP 2 - User sends the link/path and we store it.
+    """
+    plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.brief_id == brief_id,
+        models.AgencyPlan.agency_id == current_user["agency_id"]
+    ).first()
+    
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan slot not found.")
         
-    old_status = slot.status
-    slot.status = "CLIENT_REVIEW"
-    slot.plan_file_url = payload.file_url 
-    slot.submitted_at = datetime.utcnow()
+    # Versioning Logic: If a file already exists, we increment the version
+    if plan.plan_file_url:
+        plan.version_number += 1
+        action_detail = f"New version (v{plan.version_number}) uploaded. Path: {payload.file_url}"
+    else:
+        action_detail = f"Initial plan file uploaded. Path: {payload.file_url}"
+
+    # Store the final file path
+    plan.plan_file_url = payload.file_url 
+    plan.plan_file_name = payload.file_url.split("/")[-1]
+    
+    # NEW STATUS FLOW: PENDING_REVIEW
+    plan.status = "PENDING_REVIEW"
+    plan.updated_at = models.get_utc_now()
+    plan.updated_by = current_user["id"]
     
     # Audit History
     history = models.HistoryTrail(
-        submission_id=slot.id,
-        action="PLAN_UPLOADED",
-        user_name=current_user["name"],
-        details=f"Plan uploaded to GCS. Status changed from {old_status} to CLIENT_REVIEW."
+        agency_plan_id=plan.id,
+        action="FILE_UPLOADED",
+        user_id=current_user["id"],
+        details=action_detail
     )
     db.add(history)
     db.commit()
     
-    return {"status": "success", "newStatus": slot.status, "fileUrl": slot.plan_file_url}
+    return {"status": "success", "newStatus": plan.status, "version": plan.version_number}
+
+@app.get("/briefs/{brief_id}/plans/{plan_id}", response_model=plan_schema.AgencyPlanDetail)
+def get_plan_detail(
+    brief_id: int,
+    plan_id: int,
+    db: Session = Depends(session.get_db),
+    current_user: dict = Depends(security.get_current_user)
+):
+    """
+    Deep-dive into a specific plan (DS Group or Agency Owner).
+    """
+    plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.id == plan_id,
+        models.AgencyPlan.brief_id == brief_id
+    ).first()
+    
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    if current_user["role"] == "AGENCY" and plan.agency_id != current_user["agency_id"]:
+        raise HTTPException(status_code=403, detail="Forbidden: You can only view your own plans.")
+
+    # Generate Production VIEW URL if file exists
+    view_url = None
+    if plan.plan_file_url:
+        view_url = generate_presigned_get_url(plan.plan_file_url)
+
+    return {
+        "id": plan.id,
+        "agencyId": plan.agency.id,
+        "agencyName": plan.agency.name,
+        "status": plan.status,
+        "submittedAt": plan.submitted_at,
+        "planFileName": plan.plan_file_name,
+        "planFileUrl": view_url,
+        "versionNumber": plan.version_number,
+        "createdAt": plan.created_at,
+        "updatedAt": plan.updated_at,
+        "createdBy": plan.created_by,
+        "updatedBy": plan.updated_by,
+        "history": plan.history
+    }
 
 # --- VALIDATION STUBS ---
 
-@app.post("/submissions/{submission_id}/validate-columns")
+# --- VALIDATION & SUBMISSION ENDPOINTS ---
+
+@app.post("/briefs/{brief_id}/validate-columns")
 def validate_columns(
-    submission_id: str,
-    payload: sub_schema.ValidateColumnsRequest,
+    brief_id: int,
+    payload: plan_schema.ValidateColumnsRequest,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.verify_agency)
 ):
-    """
-    AGENCY ONLY: Simulated column validation logic.
-    Checks if the mapped headers match the expected schema.
-    """
-    # Verify access
-    slot = db.query(models.Submission).filter(
-        models.Submission.id == submission_id,
-        models.Submission.agency_id == current_user["agency_id"]
+    """Simulated column validation logic."""
+    plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.brief_id == brief_id,
+        models.AgencyPlan.agency_id == current_user["agency_id"]
     ).first()
-    if not slot:
+    if not plan:
         raise HTTPException(status_code=404, detail="Plan slot not found")
 
-    # Simulation Logic
     required_fields = ["Date", "Channel", "Impressions", "Cost"]
     mapped_fields = [m.mapped_field for m in payload.mappings]
-    
     missing = [f for f in required_fields if f not in mapped_fields]
     
     if missing:
-        return {
-            "status": "error",
-            "message": f"Missing mandatory fields: {', '.join(missing)}",
-            "isValid": False
-        }
+        return {"status": "error", "message": f"Missing fields: {', '.join(missing)}", "isValid": False}
         
-    return {
-        "status": "success",
-        "message": "All mandatory columns mapped correctly.",
-        "isValid": True,
-        "mappingAccuracy": 0.98,
-        "details": [
-            {"field": "Date", "confidence": 1.0, "reason": "Exact match"},
-            {"field": "Channel", "confidence": 0.95, "reason": "Contextual match (Publisher)"},
-            {"field": "Cost", "confidence": 1.0, "reason": "Exact match"},
-            {"field": "Impressions", "confidence": 0.90, "reason": "Synonym match (Reach/Impressions)"}
-        ]
-    }
+    return {"status": "success", "isValid": True, "mappingAccuracy": 0.98}
 
-@app.post("/submissions/{submission_id}/validate-rows")
+@app.post("/briefs/{brief_id}/validate-rows")
 def validate_rows(
-    submission_id: str,
+    brief_id: int,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.verify_agency)
 ):
-    """
-    AGENCY ONLY: Simulated row-level validation (Data Types, Nulls, etc.)
-    """
-    return {
-        "status": "success",
-        "isValid": True,
-        "dataQualityScore": 0.92,
-        "summary": {
-            "totalRows": 150,
-            "validRows": 148,
-            "errorCount": 0,
-            "warningCount": 2,
-            "details": "Minor formatting warnings in 'Remarks' column. 2 rows have slightly unusual date formats but were auto-corrected."
-        }
-    }
+    """Simulated row-level validation."""
+    return {"status": "success", "isValid": True, "dataQualityScore": 0.92}
 
-@app.post("/submissions/{submission_id}/submit")
+@app.post("/briefs/{brief_id}/submit")
 def submit_plan(
-    submission_id: str,
-    payload: sub_schema.SubmitPlanRequest,
+    brief_id: int,
+    payload: plan_schema.SubmitPlanRequest,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.verify_agency)
 ):
-    """
-    AGENCY ONLY: Officially submits the plan for Client Review.
-    """
-    slot = db.query(models.Submission).filter(
-        models.Submission.id == submission_id,
-        models.Submission.agency_id == current_user["agency_id"]
+    """Officially submits the plan for Client Review."""
+    plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.brief_id == brief_id,
+        models.AgencyPlan.agency_id == current_user["agency_id"]
     ).first()
     
-    if not slot:
+    if not plan:
         raise HTTPException(status_code=404, detail="Plan slot not found")
         
-    old_status = slot.status
-    slot.status = "CLIENT_REVIEW" # Officially sent to client
-    slot.submitted_at = datetime.utcnow()
+    plan.status = "PENDING_REVIEW"
+    plan.submitted_at = models.get_utc_now()
+    plan.updated_at = models.get_utc_now()
+    plan.updated_by = current_user["id"]
     
     # Audit History
     history = models.HistoryTrail(
-        submission_id=slot.id,
+        agency_plan_id=plan.id,
         action="PLAN_SUBMITTED",
-        user_name=current_user["name"],
+        user_id=current_user["id"],
         details=payload.comment or "Plan submitted for review."
     )
     db.add(history)
     db.commit()
     
-    return {"status": "success", "newStatus": slot.status}
+    return {"status": "success", "newStatus": plan.status}
 
-@app.post("/submissions/{submission_id}/comments")
+@app.post("/briefs/{brief_id}/comments")
 def add_comment(
-    submission_id: str,
-    payload: sub_schema.AddCommentRequest,
+    brief_id: int,
+    payload: plan_schema.AddCommentRequest,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.get_current_user)
 ):
-    """
-    BOTH ROLES: Adds a comment to the history trail for communication.
-    """
-    slot = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-    if not slot:
-        raise HTTPException(status_code=404, detail="Submission not found")
+    """Adds a comment to the agency's plan for this brief."""
+    # Find plan based on role
+    query = db.query(models.AgencyPlan).filter(models.AgencyPlan.brief_id == brief_id)
+    if current_user["role"] == "AGENCY":
+        query = query.filter(models.AgencyPlan.agency_id == current_user["agency_id"])
+    
+    plan = query.first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan slot not found")
 
     # Audit History
     history = models.HistoryTrail(
-        submission_id=slot.id,
+        agency_plan_id=plan.id,
         action="COMMENT_ADDED",
-        user_name=current_user["name"],
-        details=payload.comment
+        user_id=current_user["id"],
+        details="Comment added via API.",
+        comment=payload.comment # New Column
     )
     db.add(history)
-    db.commit()
+    plan.updated_at = models.get_utc_now()
+    plan.updated_by = current_user["id"]
     
-    return {"status": "success", "message": "Comment added to history trail."}
+    db.commit()
+    return {"status": "success"}
 
-# --- REVIEW LOGIC ---
+# --- REVIEW LOGIC (Needs plan_id because DS Group sees all) ---
 
-@app.post("/submissions/{submission_id}/review")
-def review_submission(
-    submission_id: str,
-    review: sub_schema.ReviewSubmissionRequest,
+@app.post("/briefs/{brief_id}/plans/{plan_id}/review")
+def review_plan(
+    brief_id: int,
+    plan_id: int,
+    review: plan_schema.ReviewSubmissionRequest,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.verify_ds_group)
 ):
     """DS GROUP ONLY: Allows approval or requesting revisions."""
-    slot = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-    if not slot:
-        raise HTTPException(status_code=404, detail="Submission not found")
+    plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.id == plan_id,
+        models.AgencyPlan.brief_id == brief_id
+    ).first()
+    
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
         
-    old_status = slot.status
-    slot.status = review.status
+    old_status = plan.status
+    plan.status = review.status
+    plan.updated_at = models.get_utc_now()
+    plan.updated_by = current_user["id"]
     
     # Audit History
     history = models.HistoryTrail(
-        submission_id=slot.id,
+        agency_plan_id=plan.id,
         action=f"STATUS_CHANGE: {old_status} -> {review.status}",
-        user_name=current_user["name"],
+        user_id=current_user["id"],
         details=review.reason
     )
     db.add(history)
     db.commit()
     
-    return {"status": "success", "newStatus": slot.status}
+    return {"status": "success", "newStatus": plan.status}

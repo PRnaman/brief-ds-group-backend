@@ -8,7 +8,7 @@ class UserBase(BaseModel):
     agencyName: Optional[str] = None # Adjusted to match Postman camelCase
 
 class User(UserBase):
-    id: str
+    id: int
 
     class Config:
         from_attributes = True

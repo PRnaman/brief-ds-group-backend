@@ -11,7 +11,11 @@ SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postg
 
 # The 'engine' is the core interface to the database.
 # It handles the connection pool and the actual SQL execution.
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    pool_pre_ping=True,  # Check connection liveness before usage
+    pool_recycle=1800    # Recycle connections every 30 mins
+)
 
 # 'SessionLocal' is a factory for creating database sessions.
 # Each request to our API will get its own session.

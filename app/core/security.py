@@ -1,81 +1,62 @@
 from fastapi import Security, HTTPException, Depends
+from app.db import session, models
+from fastapi import Depends, HTTPException
+from sqlalchemy.orm import Session
 from fastapi.security.api_key import APIKeyHeader
 from starlette.status import HTTP_403_FORBIDDEN
-
-# --- UUID Constants for Mock Auth ---
-# In a real app, these would come from the database.
-ID_DS_GROUP = "550e8400-e29b-41d4-a716-446655440000"
-ID_AG_ALPHA = "550e8400-e29b-41d4-a716-446655440001"
-ID_AG_BETA  = "550e8400-e29b-41d4-a716-446655440002"
 
 # --- HEADER CONFIGURATION ---
 TOKEN_HEADER_NAME = "Authorization"
 api_key_header = APIKeyHeader(name=TOKEN_HEADER_NAME, auto_error=False)
 
-# This simulates our database of users. Each token maps to a specific User Object.
-USERS_DB = {
-    "admin@dsgroup.com": {
-        "password": "password123",
-        "token": "token_ds_admin",
-        "user_info": {
-            "id": "550e8400-e29b-41d4-a716-446655440003",
-            "email": "admin@dsgroup.com",
-            "name": "DS Admin",
-            "role": "DS_GROUP",
-            "client_id": ID_DS_GROUP,
-            "agency_id": None
-        }
-    },
-    "alpha@agency.com": {
-        "password": "password123",
-        "token": "token_agency_alpha",
-        "user_info": {
-            "id": "550e8400-e29b-41d4-a716-446655440004",
-            "email": "alpha@agency.com",
-            "name": "Alpha User",
-            "role": "AGENCY",
-            "client_id": None,
-            "agency_id": ID_AG_ALPHA,
-            "agency_name": "Agency Alpha" # Keep for backward compat in UI
-        }
-    },
-    "beta@agency.com": {
-        "password": "password123",
-        "token": "token_agency_beta",
-        "user_info": {
-            "id": "550e8400-e29b-41d4-a716-446655440005",
-            "email": "beta@agency.com",
-            "name": "Beta User",
-            "role": "AGENCY",
-            "client_id": None,
-            "agency_id": ID_AG_BETA,
-            "agency_name": "Agency Beta"
-        }
-    }
-}
+from passlib.context import CryptContext
 
-# Mapping of tokens back to users for verification.
-TOKENS_TO_USERS = {v["token"]: v["user_info"] for v in USERS_DB.values()}
+# --- PASSWORD HASHING ---
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-async def get_current_user(api_key: str = Depends(api_key_header)):
+def verify_password(plain_password, hashed_password):
+    """Verifies a plain password against the stored hash."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    """Generates a Bcrypt hash for storing."""
+    return pwd_context.hash(password)
+
+async def get_current_user(api_key: str = Depends(api_key_header), db: Session = Depends(session.get_db)):
     """
-    Middleware function that validates tokens and returns User context.
-    Now includes client_id and agency_id for relational isolation.
+    Validates token against the USERS table in the Database.
+    Token is assumed to be the USER ID for simplicity in this implementation, 
+    or a session token stored in Redis/DB in a full production app.
+    
+    For this phase, we will use the USER ID as the Bearer Token to keep it stateless but DB-backed.
     """
     if not api_key:
         raise HTTPException(
             status_code=HTTP_403_FORBIDDEN, detail=f"Missing {TOKEN_HEADER_NAME} header"
         )
     
+    # Extract token (Bearer ...)
     token = api_key.replace("Bearer ", "") if "Bearer " in api_key else api_key
     
-    user = TOKENS_TO_USERS.get(token)
+    # DB Lookup: Find user where ID matches the token (Simple API Key style)
+    # OR find session where token matches. 
+    # For now, we treat the 'token' as the User ID (Direct Lookup).
+    user = db.query(models.User).filter(models.User.id == token).first()
+    
     if not user:
         raise HTTPException(
-            status_code=HTTP_403_FORBIDDEN, detail="Invalid or expired token"
+            status_code=HTTP_403_FORBIDDEN, detail="Invalid token or user not found"
         )
     
-    return user
+    # Convert SQLAlchemy object to dictionary for compatibility with existing code
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "role": user.role,
+        "client_id": user.client_id,
+        "agency_id": user.agency_id
+    }
 
 def verify_ds_group(user: dict = Depends(get_current_user)):
     """Only allows users with role 'DS_GROUP'."""

@@ -1,6 +1,11 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional, Any, Dict
 from datetime import datetime
+
+def convert_to_ist(dt: Optional[datetime]) -> Optional[str]:
+    if not dt:
+        return None
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 # History Trail Schemas
 class HistoryTrailBase(BaseModel):
@@ -9,46 +14,60 @@ class HistoryTrailBase(BaseModel):
 
 class HistoryTrail(HistoryTrailBase):
     id: int
-    user_name: str
-    timestamp: datetime
+    user_name: str = Field(alias="userName") # Derive from property
+    comment: Optional[str] = None # Added comment field
+    created_at: datetime = Field(alias="createdAt")
 
-    model_config = ConfigDict(from_attributes=True)
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def format_datetime(cls, v):
+        if isinstance(v, datetime):
+            return convert_to_ist(v)
+        return v
 
-# Submission Schemas
-class SubmissionBase(BaseModel):
-    agency_id: str
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+# Agency Plan Schemas
+class AgencyPlanSummary(BaseModel):
+    id: Optional[int] = None
+    agency_id: int = Field(alias="agencyId")
+    agency_name: str = Field(alias="agencyName")
     status: str
+    submitted_at: Optional[datetime] = Field(None, alias="submittedAt")
 
-class Submission(SubmissionBase):
-    id: str
-    brief_id: str
-    version_number: int
-    plan_file_name: Optional[str] = None
-    plan_file_url: Optional[str] = None
-    submitted_at: Optional[datetime] = None
-    last_updated: datetime
+    @field_validator("submitted_at", mode="before")
+    @classmethod
+    def format_datetime(cls, v):
+        if isinstance(v, datetime):
+            return convert_to_ist(v)
+        return v
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+class AgencyPlanDetail(AgencyPlanSummary):
+    plan_file_name: Optional[str] = Field(None, alias="planFileName")
+    plan_file_url: Optional[str] = Field(None, alias="planFileUrl") # This will be the VIEW URL
+    version_number: int = Field(alias="versionNumber")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+    created_by: Optional[int] = Field(None, alias="createdBy")
+    updated_by: Optional[int] = Field(None, alias="updatedBy")
     history: List[HistoryTrail] = []
 
-    model_config = ConfigDict(from_attributes=True)
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def format_all_dates(cls, v):
+        if isinstance(v, datetime):
+            return convert_to_ist(v)
+        return v
 
-class SubmissionSummary(BaseModel):
-    id: Optional[str] = None
-    agencyId: str
-    status: str
-    submittedDate: Optional[str] = None
-
-class SubmissionDetail(SubmissionSummary):
-    planFileName: Optional[str] = None
-    versionNumber: int
-    history: List[Dict[str, Any]] = []
-
-# Request Schemas for the Agency Workflow
-class UploadPlanRequest(BaseModel):
-    file_url: str
+# Request Schemas
+class ConfirmUploadRequest(BaseModel):
+    file_url: str = Field(alias="fileUrl")
 
 class ColumnMapping(BaseModel):
-    header_name: str
-    mapped_field: str
+    header_name: str = Field(alias="headerName")
+    mapped_field: str = Field(alias="mappedField")
 
 class ValidateColumnsRequest(BaseModel):
     mappings: List[ColumnMapping]
@@ -60,8 +79,6 @@ class SubmitPlanRequest(BaseModel):
 class AddCommentRequest(BaseModel):
     comment: str
 
-# Request Schema for DS Review
 class ReviewSubmissionRequest(BaseModel):
-    agency_id: str 
-    status: str # CLIENT_REVIEW, AGENCY_REVISION, APPROVED
+    status: str 
     reason: Optional[str] = None
