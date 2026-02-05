@@ -137,9 +137,10 @@ def create_brief(
             # Initial Audit
             slot_history = models.HistoryTrail(
                 agency_plan_id=new_plan.id,
-                action="SLOT_CREATED",
+                action="NEW_BRIEF_CREATED",
                 user_id=current_user["id"],
-                details=f"Plan slot automatically created for {agency.name}."
+                details=f"The brief was created and assigned to {agency.name}.",
+                comment=None
             )
             db.add(slot_history)
 
@@ -534,44 +535,7 @@ def submit_plan(
     
     return {"status": "success", "newStatus": plan.status}
 
-@app.post("/briefs/{brief_id}/plans/{plan_id}/comments")
-def add_comment(
-    brief_id: int,
-    plan_id: int,
-    payload: plan_schema.AddCommentRequest,
-    db: Session = Depends(session.get_db),
-    current_user: dict = Depends(security.get_current_user)
-):
-    """Adds a comment to a specific agency's plan for this brief."""
-    plan = db.query(models.AgencyPlan).filter(
-        models.AgencyPlan.id == plan_id,
-        models.AgencyPlan.brief_id == brief_id
-    ).first()
-    
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found")
-
-    if current_user["role"] == "AGENCY" and plan.agency_id != current_user["agency_id"]:
-        raise HTTPException(status_code=403, detail="Forbidden: You can only comment on your own plan.")
-
-    # Audit History
-    history = models.HistoryTrail(
-        agency_plan_id=plan.id,
-        action="COMMENT_ADDED",
-        user_id=current_user["id"],
-        details="Comment added via API.",
-        comment=payload.comment # New Column
-    )
-    db.add(history)
-    plan.updated_at = models.get_utc_now()
-    plan.updated_by = current_user["id"]
-    
-    db.commit()
-    return {"status": "success"}
-
-# --- REVIEW LOGIC (Needs plan_id because DS Group sees all) ---
-
-@app.post("/briefs/{brief_id}/plans/{plan_id}/review")
+@app.post("/briefs/{brief_id}/plans/{plan_id}/review", response_model=plan_schema.ReviewResponse)
 def review_plan(
     brief_id: int,
     plan_id: int,
@@ -579,7 +543,7 @@ def review_plan(
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.verify_ds_group)
 ):
-    """DS GROUP ONLY: Allows approval or requesting revisions."""
+    """DS GROUP ONLY: Unified Review/Comment endpoint. Can change status, add comment, or both."""
     plan = db.query(models.AgencyPlan).filter(
         models.AgencyPlan.id == plan_id,
         models.AgencyPlan.brief_id == brief_id
@@ -589,40 +553,57 @@ def review_plan(
         raise HTTPException(status_code=404, detail="Plan not found")
         
     old_status = plan.status
-    plan.status = review.status
+    has_status_change = review.status is not None
+    
+    if has_status_change:
+        plan.status = review.status
+        action_name = "STATUS_CHANGE"
+        details_text = f"Status changed from {old_status} to {review.status}."
+        history_comment = None
+    else:
+        action_name = "COMMENT_ADDED"
+        details_text = "A new comment was added to the plan history."
+        history_comment = review.comment
+    
     plan.updated_at = models.get_utc_now()
     plan.updated_by = current_user["id"]
     
     # Audit History
     history = models.HistoryTrail(
         agency_plan_id=plan.id,
-        action=f"STATUS_CHANGE: {old_status} -> {review.status}",
+        action=action_name,
         user_id=current_user["id"],
-        details=review.reason
+        details=details_text,
+        comment=history_comment
     )
     db.add(history)
     
-    # Check all plans for this brief and update brief status if needed
-    brief = db.query(models.Brief).filter(models.Brief.id == brief_id).first()
-    if brief:
-        all_plans = db.query(models.AgencyPlan).filter(
-            models.AgencyPlan.brief_id == brief_id
-        ).all()
-        
-        # Count plan statuses
-        approved_count = sum(1 for p in all_plans if p.status == "APPROVED")
-        rejected_count = sum(1 for p in all_plans if p.status == "REVISIONS_REQUESTED")
-        
-        # Update brief status based on plan statuses
-        if approved_count == len(all_plans):
-            brief.status = "APPROVED"
-        elif rejected_count > 0:
-            brief.status = "REVISIONS_REQUESTED"
-        # If any are still DRAFT or PENDING_REVIEW, keep brief status as ACTIVE
-        
-        brief.updated_at = models.get_utc_now()
-        brief.updated_by = current_user["id"]
+    # Update Brief Status ONLY if the plan status actually changed
+    brief = None
+    if has_status_change:
+        brief = db.query(models.Brief).filter(models.Brief.id == brief_id).first()
+        if brief:
+            all_plans = db.query(models.AgencyPlan).filter(
+                models.AgencyPlan.brief_id == brief_id
+            ).all()
+            
+            approved_count = sum(1 for p in all_plans if p.status == "APPROVED")
+            rejected_count = sum(1 for p in all_plans if p.status == "REJECTED")
+            
+            if approved_count == len(all_plans):
+                brief.status = "APPROVED"
+            elif rejected_count > 0:
+                brief.status = "REJECTED"
+            
+            brief.updated_at = models.get_utc_now()
+            brief.updated_by = current_user["id"]
     
     db.commit()
+    db.refresh(history)
     
-    return {"status": "success", "newStatus": plan.status, "briefStatus": brief.status if brief else None}
+    return {
+        "status": "success",
+        "newPlanStatus": plan.status,
+        "newBriefStatus": brief.status if brief else None,
+        "history": history
+    }

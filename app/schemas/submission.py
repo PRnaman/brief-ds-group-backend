@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from typing import List, Optional, Any, Dict, Union
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing import List, Optional, Any, Dict, Union, Literal
 from app.schemas.user import User
 from datetime import datetime
 
@@ -81,5 +81,21 @@ class AddCommentRequest(BaseModel):
     comment: str
 
 class ReviewSubmissionRequest(BaseModel):
-    status: str 
-    reason: Optional[str] = None
+    status: Optional[Literal["APPROVED", "REJECTED"]] = None
+    comment: Optional[str] = None
+
+    @model_validator(mode="after")
+    def check_exclusive_or(self) -> "ReviewSubmissionRequest":
+        if self.status and self.comment:
+            raise ValueError("Provide either status or comment, not both.")
+        if not self.status and not self.comment:
+            raise ValueError("Either status or comment must be provided.")
+        return self
+
+class ReviewResponse(BaseModel):
+    status: str
+    newPlanStatus: str = Field(alias="newPlanStatus")
+    newBriefStatus: Optional[str] = Field(None, alias="newBriefStatus")
+    history: HistoryTrail
+
+    model_config = ConfigDict(populate_by_name=True)
