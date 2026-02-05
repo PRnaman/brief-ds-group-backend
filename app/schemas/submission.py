@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Union
+from app.schemas.user import User
 from datetime import datetime
 
 def convert_to_ist(dt: Optional[datetime]) -> Optional[str]:
@@ -50,8 +51,8 @@ class AgencyPlanDetail(AgencyPlanSummary):
     version_number: int = Field(alias="versionNumber")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
-    created_by: Optional[int] = Field(None, alias="createdBy")
-    updated_by: Optional[int] = Field(None, alias="updatedBy")
+    creator: Optional[User] = Field(None, alias="createdBy")
+    updater: Optional[User] = Field(None, alias="updatedBy")
     history: List[HistoryTrail] = []
 
     @field_validator("created_at", "updated_at", mode="before")

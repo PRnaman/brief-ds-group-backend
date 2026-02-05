@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
+from app.schemas.user import User
 from datetime import date, datetime, timedelta, timezone
 import uuid
 
@@ -62,8 +63,8 @@ class BriefResponse(BriefBase):
     
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
-    created_by: Optional[int] = Field(None, alias="createdBy")
-    updated_by: Optional[int] = Field(None, alias="updatedBy")
+    creator: Optional[User] = Field(None, alias="createdBy")
+    updater: Optional[User] = Field(None, alias="updatedBy")
     
     agency_plans: List[AgencyPlanSummary] = Field(alias="agencyPlans")
 

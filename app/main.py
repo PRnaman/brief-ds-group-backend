@@ -47,14 +47,13 @@ def login(payload: user_schema.LoginRequest, db: Session = Depends(session.get_d
     #     raise HTTPException(status_code=401, detail="Invalid email or password")
     
     return {
-        "token": str(user_record.id), # Using ID as token (converted to str)
+        "token": str(user_record.id),
         "user": {
-            "id": user_record.id,
             "email": user_record.email,
             "name": user_record.name,
             "role": user_record.role,
-            "client_id": user_record.client_id,
-            "agency_id": user_record.agency_id
+            "agencyName": user_record.agency.name if user_record.agency else None,
+            "id": user_record.id
         }
     }
 
@@ -231,8 +230,8 @@ def list_briefs(
             "remarks": b.remarks,
             "createdAt": b.created_at,
             "updatedAt": b.updated_at,
-            "createdBy": b.created_by,
-            "updatedBy": b.updated_by,
+            "creator": b.creator,
+            "updater": b.updater,
             "agencyPlans": filtered_plans
         }
         results.append(brief_data)
@@ -309,8 +308,8 @@ def get_brief_detail(
         "remarks": db_brief.remarks,
         "createdAt": db_brief.created_at,
         "updatedAt": db_brief.updated_at,
-        "createdBy": db_brief.created_by,
-        "updatedBy": db_brief.updated_by,
+        "creator": db_brief.creator,
+        "updater": db_brief.updater,
         "agencyPlans": filtered_plans
     }
 
@@ -460,8 +459,8 @@ def get_plan_detail(
         "versionNumber": plan.version_number,
         "createdAt": plan.created_at,
         "updatedAt": plan.updated_at,
-        "createdBy": plan.created_by,
-        "updatedBy": plan.updated_by,
+        "creator": plan.creator,
+        "updater": plan.updater,
         "history": plan.history
     }
 
@@ -535,22 +534,25 @@ def submit_plan(
     
     return {"status": "success", "newStatus": plan.status}
 
-@app.post("/briefs/{brief_id}/comments")
+@app.post("/briefs/{brief_id}/plans/{plan_id}/comments")
 def add_comment(
     brief_id: int,
+    plan_id: int,
     payload: plan_schema.AddCommentRequest,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.get_current_user)
 ):
-    """Adds a comment to the agency's plan for this brief."""
-    # Find plan based on role
-    query = db.query(models.AgencyPlan).filter(models.AgencyPlan.brief_id == brief_id)
-    if current_user["role"] == "AGENCY":
-        query = query.filter(models.AgencyPlan.agency_id == current_user["agency_id"])
+    """Adds a comment to a specific agency's plan for this brief."""
+    plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.id == plan_id,
+        models.AgencyPlan.brief_id == brief_id
+    ).first()
     
-    plan = query.first()
     if not plan:
-        raise HTTPException(status_code=404, detail="Plan slot not found")
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    if current_user["role"] == "AGENCY" and plan.agency_id != current_user["agency_id"]:
+        raise HTTPException(status_code=403, detail="Forbidden: You can only comment on your own plan.")
 
     # Audit History
     history = models.HistoryTrail(
@@ -599,6 +601,28 @@ def review_plan(
         details=review.reason
     )
     db.add(history)
+    
+    # Check all plans for this brief and update brief status if needed
+    brief = db.query(models.Brief).filter(models.Brief.id == brief_id).first()
+    if brief:
+        all_plans = db.query(models.AgencyPlan).filter(
+            models.AgencyPlan.brief_id == brief_id
+        ).all()
+        
+        # Count plan statuses
+        approved_count = sum(1 for p in all_plans if p.status == "APPROVED")
+        rejected_count = sum(1 for p in all_plans if p.status == "REVISIONS_REQUESTED")
+        
+        # Update brief status based on plan statuses
+        if approved_count == len(all_plans):
+            brief.status = "APPROVED"
+        elif rejected_count > 0:
+            brief.status = "REVISIONS_REQUESTED"
+        # If any are still DRAFT or PENDING_REVIEW, keep brief status as ACTIVE
+        
+        brief.updated_at = models.get_utc_now()
+        brief.updated_by = current_user["id"]
+    
     db.commit()
     
-    return {"status": "success", "newStatus": plan.status}
+    return {"status": "success", "newStatus": plan.status, "briefStatus": brief.status if brief else None}

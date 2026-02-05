@@ -53,6 +53,10 @@ class User(Base):
     client = relationship("Client", back_populates="users", foreign_keys=[client_id])
     agency = relationship("Agency", back_populates="users", foreign_keys=[agency_id])
 
+    @property
+    def agency_name(self):
+        return self.agency.name if self.agency else None
+
 class Brief(Base):
     __tablename__ = "briefs"
     
