@@ -1,0 +1,152 @@
+columns:
+    mandatory:
+      - name: programme
+        description: Name of the television programme or show or particular time period in which ad will be displayed like Budget day, Run of the day (e.g., "Big Boss", "Indian Idol","Dustak", "RODP" or "Run of the Day Part")
+        datatype: str
+
+      - name: channel_name
+        description: Name of the TV broadcast channel
+        datatype: str
+
+      - name: day
+        description: Day of the week the spot ran which can be defined as range of days as well
+        datatype: str
+
+      - name: time
+        description: Scheduled broadcast time of the spot which can be band based. It might have hrs mentioned or not
+        datatype: str
+
+      - name: duration
+        description: Duration of the advertising spot in seconds where seconds, sec , s or minutes might be added or not
+        datatype: float
+
+      - name: week1
+        description: Number of spots scheduled in Week 1
+        datatype: float
+
+      - name: spots
+        description: Total number of advertising spots booked
+        datatype: float
+
+      - name: fct
+        description: Frequency Capping Target Maximum number of times a single viewer is shown the ad
+        datatype: float
+
+      - name: average_duration
+        description: Average duration of all spots booked
+        datatype: float
+
+      - name: gross.cost
+        description: Total cost of the campaign before any discounts or agency commission
+        datatype: float
+
+      - name: gross.rate
+        description: Rate per spot before discounts Gross Cost per Spots
+        datatype: float
+
+      - name: nett.cost
+        description: Total cost of the campaign after discounts commission net cost
+        datatype: float
+
+      - name: nett.rate
+        description: Rate per spot after discounts Net Cost per Spots
+        datatype: float
+
+      - name: disp
+        description: Disposition or status of the spot confirmed, on-hold
+        datatype: str
+
+      - name: as_per_brk_tvr_hsm.tvr
+        description: Television Viewer Rating (TVR) for the advertising break
+        datatype: float
+
+      - name: as_per_brk_tvr_hsm.grp
+        description: Gross Rating Points (GRP) for the advertising break
+        datatype: float
+
+      - name: as_per_brk_tvr_hsm.10secgrp
+        description: Gross Rating Points normalized to a 10-second spot duration
+        datatype: float
+
+      - name: as_per_brk_tvr_hsm.cprp
+        description: Cost Per Rating Point (CPRP) - the cost to deliver one GRP
+        datatype: float
+
+      - name: hsm_market_details.aots
+        description: Share of time spent watching TV in the HSM market
+        datatype: str
+
+      - name: hsm_market_details.reach
+        description: Percentage of the target audience reached in the HSM market
+        datatype: str
+
+      - name: hsm_market_details.cpt
+        description: Cost Per Thousand (CPT) - the cost to reach 1,000 people in the HSM market
+        datatype: str
+
+      - name: hsm_market_details.1
+        description: Reach at 1+ frequency level in the HSM market
+        datatype: str
+
+      - name: hsm_market_details.2
+        description: Reach at 2+ frequency level in the HSM market
+        datatype: str
+
+      - name: hsm_market_details.3
+        description: Reach at 3+ frequency level in the HSM market
+        datatype: str
+
+      - name: hsm_market_details.4
+        description: Reach at 4+ frequency level in the HSM market
+        datatype: str
+
+      - name: hsm_market_details.5
+        description: Reach at 5+ frequency level in the HSM market
+        datatype: str
+
+      - name: as_per_brk_tvr_p1_market.tvr
+        description: Television Viewer Rating (TVR) for the P1 market
+        datatype: float
+
+      - name: as_per_brk_tvr_p1_market.grp
+        description: Gross Rating Points (GRP) for the P1 market
+        datatype: float
+
+      - name: as_per_brk_tvr_p1_market.10secgrp
+        description: Gross Rating Points normalized to a 10-second spot duration for the P1 market
+        datatype: float
+
+      - name: as_per_brk_tvr_p1_market.cprp
+        description: Cost Per Rating Point (CPRP) for the P1 market
+        datatype: float
+    
+    optional:
+      - name: week2
+        description: Number of spots scheduled in Week 2
+        datatype: float
+
+      - name: week3
+        description: Number of spots scheduled in Week 3
+        datatype: float
+
+      - name: week4
+        description: Number of spots scheduled in Week 4
+        datatype: float
+
+      - name: week5
+        description: Number of spots scheduled in Week 5
+        datatype: float
+
+      - name: week6
+        description: Number of spots scheduled in Week 6
+        datatype: float
+
+      - name: week7
+        description: Number of spots scheduled in Week 7
+        datatype: float
+
+      - name: week8
+        description: Number of spots scheduled in Week 8
+        datatype: float
+    
+        

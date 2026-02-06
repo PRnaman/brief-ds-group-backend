@@ -7,6 +7,7 @@ import os
 from dotenv import load_dotenv
 import yaml
 import openpyxl
+from openpyxl.utils import get_column_letter
 # Load environment variables from .env file
 load_dotenv()
 
@@ -381,6 +382,10 @@ def get_upload_url(
     # 3. Generate Signed PUT URL
     upload_url = gcs.get_signed_url(upload_path, method="PUT", content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     
+    # 4. PERSIST the intended raw path for downstream steps
+    plan.raw_file_path = upload_path
+    db.commit()
+
     return {
         "uploadUrl": upload_url,
         "planId": plan.id,
@@ -463,18 +468,14 @@ def _transform_senior_api_response(agent_resp: dict):
          ai_mappings[idx] = target
 
     # Process 'unmapped_source_columns' (We keep them but mapped to "")
-    # Actually, the user's snippet put them in one list for 'ai_mappings'.
-    # But usually unmapped columns shouldn't overwrite the header unless we want to clear it?
-    # The user logic was: col_li.append({index: target_field}). target_field is "" for unmapped.
-    # This means unmapped columns will have EMPTY headers in the flat file.
-    # Let's follow that logic if requested, or keep original?
-    # User's snippet: resp["ai_mappings"] = col_li (list of dicts). 
-    # My backend expects Dict[int, str].
+    # UPDATE: User requested NOT to map them to empty strings.
+    # If we skip them here, _process_excel_extract won't rename them, 
+    # so they will keep their ORIGINAL headers from the raw file.
     
-    for c in agent_resp.get("unmapped_source_columns", []):
-        idx = c["source_column_index"]
-        target = c["target_field"] # This is "" in the JSON
-        ai_mappings[idx] = target
+    # for c in agent_resp.get("unmapped_source_columns", []):
+    #     idx = c["source_column_index"]
+    #     target = c["target_field"] # This is "" in the JSON
+    #     ai_mappings[idx] = target
 
     return {
         "header_row": agent_resp.get("data_start_row", 0) - 1, # Heuristic: Header is usually 1 row before data?
@@ -493,16 +494,30 @@ def _process_excel_extract(local_input_path: str, local_output_path: str, header
     wb = openpyxl.load_workbook(local_input_path)
     ws = wb.active
     
-    # 1. Crop Rows: Delete everything before header_row.
-    # header_row is 1-based. If header is at 4, we delete rows 1, 2, 3.
+    # 1. Crop Rows: Move data UP instead of deleting rows (to preserve formulas)
+    # header_row is 1-based. If header is at 4, we want to move Row 4 to Row 1.
     if header_row > 1:
-        ws.delete_rows(1, amount=header_row - 1)
+        offset = header_row - 1
+        max_row = ws.max_row
+        max_col = ws.max_column
+        max_col_letter = get_column_letter(max_col)
+        
+        # Range to move: From [header_row, 1] to [max_row, max_col]
+        move_ref = f"A{header_row}:{max_col_letter}{max_row}"
+        
+        # Move UP by 'offset' rows
+        ws.move_range(move_ref, rows=-offset, translate=True)
+        
+        # Now delete the empty rows at the bottom (Optional but good for file size)
+        # The data that was at [max_row] is now at [max_row - offset].
+        # So rows from [max_row - offset + 1] to [max_row] are empty/trash.
+        # Actually, ws.max_row might update? Let's treat it safely.
+        # We delete from the END.
+        ws.delete_rows(max_row - offset + 1, amount=offset)
         
     # 2. Rename Headers (Now at Row 1)
     # mappings is {col_index_0_based: "NewName"}
-    # iterate through keys of mappings
     for col_idx, new_name in mappings.items():
-        # OpenPyXL columns are 1-based
         cell = ws.cell(row=1, column=col_idx + 1) 
         cell.value = new_name
         
@@ -669,7 +684,7 @@ def validate_columns(
     # 4. Update DB
     plan.flat_file_path = validation_result["flat_path"]
     plan.ai_mappings = validation_result["ai_mappings"]
-    plan.raw_file_path = raw_path # Persist the raw path
+    plan.raw_file_path = f"brief_media_files/{brief_id}/{plan.id}/raw/plan.xlsx" # Consistent prefix
     plan.updated_at = models.get_utc_now()
     plan.updated_by = current_user["id"]
     
@@ -713,46 +728,67 @@ def update_columns(
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found.")
 
-    if not plan.flat_file_path:
-        raise exceptions.ValidationException("Flat file not found. Please run validation first.")
+    # 1. Define Paths Dynamically
+    raw_path = f"brief_media_files/{brief_id}/{plan.id}/raw/plan.xlsx"
+    local_raw = f"tmp/update_raw_{plan.id}.xlsx"
+    local_validated = f"tmp/update_validated_{plan.id}.xlsx"
+    os.makedirs("tmp", exist_ok=True)
 
-    # 1. Read Flat File (Simulated Read)
-    # Ideally: content = gcs.read_file(plan.flat_file_path)
-    # df = pd.read_excel(io.BytesIO(content))
-    # df.rename(columns=payload.human_mappings, inplace=True)
-    
-    # 2. Upload Validated File (Simulated Upload)
-    validated_path = f"{brief_id}/{plan.id}/validated_column/plan_final.xlsx"
-    
-    # gcs.upload_file_from_memory(df.to_excel(), validated_path) # Future implementation
-    
-    
-    # Store the final file path
-    plan.validated_column_file_path = validated_path # New Column Name
-    plan.plan_file_url = validated_path # Point legacy URL to the latest validated version
-    plan.plan_file_name = validated_path.split("/")[-1]
-    
-    plan.status = "DRAFT" # Still draft until submitted
-    plan.updated_at = models.get_utc_now()
-    plan.updated_by = current_user["id"]
-    
-    # 4. Log History
-    history = models.HistoryTrail(
-        agency_plan_id=plan.id,
-        action="COLUMNS_UPDATED",
-        user_id=current_user["id"],
-        details="User confirmed/updated column mappings."
-    )
-    db.add(history)
-    db.commit()
-    
-    # 5. Return Final URL
-    final_url = gcs.get_signed_url(validated_path, method="GET")
-    
-    return {
-        "validatedFileUrl": final_url,
-        "status": "success"
-    }
+    # 2. Merge Mappings
+    # The payload 'human_mappings' is likely { "0": "programme", ... }
+    final_mappings = (plan.ai_mappings or {}).copy()
+    for k, v in payload.human_mappings.items():
+        if v:
+            final_mappings[str(k)] = v 
+
+    try:
+        # 3. Download Raw File
+        gcs.download_file(raw_path, local_raw)
+        
+        # 3. Re-process (Crop rows + Rename + DELETE UNMAPPED)
+        # We use header_row=4 (Row 5) as per current Mock logic.
+        _process_excel_extract(
+            local_raw, 
+            local_validated, 
+            header_row=4, 
+            mappings={int(k): v for k, v in final_mappings.items()}
+        )
+        
+        # 4. Upload to GCS
+        validated_blob = f"brief_media_files/{brief_id}/{plan.id}/validated/plan_final.xlsx"
+        gcs.upload_file(local_validated, validated_blob)
+        
+        # 5. Update DB
+        plan.human_mappings = payload.human_mappings
+        plan.validated_column_file_path = validated_blob
+        plan.plan_file_url = validated_blob
+        plan.plan_file_name = "plan_final.xlsx"
+        plan.updated_at = models.get_utc_now()
+        
+        # 6. History
+        history = models.HistoryTrail(
+            agency_plan_id=plan.id,
+            action="COLUMNS_UPDATED",
+            user_id=current_user["id"],
+            details="User confirmed/updated column mappings. Final file generated."
+        )
+        db.add(history)
+        db.commit()
+        
+        # 7. Generate Signed URL
+        final_url = gcs.get_signed_url(validated_blob, method="GET")
+        
+        return {
+            "validatedFileUrl": final_url,
+            "status": "success"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+    finally:
+        if os.path.exists(local_raw): os.remove(local_raw)
+        if os.path.exists(local_validated): os.remove(local_validated)
 
 # Removed old endpoints: request_upload_url, confirm_upload, validate_rows
 
