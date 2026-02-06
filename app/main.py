@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
 import yaml
+import openpyxl
 # Load environment variables from .env file
 load_dotenv()
 
@@ -193,7 +194,15 @@ def list_briefs(
         filtered_plans = []
         for p in b.agency_plans:
             if current_user["role"] == "DS_GROUP" or p.agency_id == current_user["agency_id"]:
-                filtered_plans.append(p)
+                
+                # Convert to Pydantic Model explicitly to ensure fields are populated
+                p_model = plan_schema.AgencyPlanSummary.model_validate(p)
+                
+                # HARDCODED for testing as requested
+                signed_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
+                p_model.raw_file_url = signed_url
+
+                filtered_plans.append(p_model)
         
         # Privacy: Agencies should only see their own ID/Name in the target list
         # We RECONSTRUCT target_agency_ids from the existing plans
@@ -274,7 +283,15 @@ def get_brief_detail(
     filtered_plans = []
     for p in db_brief.agency_plans:
         if current_user["role"] == "DS_GROUP" or p.agency_id == current_user["agency_id"]:
-            filtered_plans.append(p)
+            
+            # Convert to Pydantic Model explicitly
+            p_model = plan_schema.AgencyPlanSummary.model_validate(p)
+
+            # HARDCODED for testing as requested
+            signed_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
+            p_model.raw_file_url = signed_url
+            
+            filtered_plans.append(p_model)
     
     # Privacy: Agencies should only see their own ID in the target list
     # Reconstruct from plans
@@ -767,6 +784,7 @@ def get_plan_detail(
         "agencyName": plan.agency.name,
         "status": plan.status,
         "submittedAt": plan.submitted_at,
+        "rawFileUrl": "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415",
         "planFileName": plan.plan_file_name,
         "planFileUrl": view_url,
         "versionNumber": plan.version_number,

@@ -35,6 +35,7 @@ class AgencyPlanSummary(BaseModel):
     agency_name: str = Field(alias="agencyName")
     status: str
     submitted_at: Optional[datetime] = Field(None, alias="submittedAt")
+    raw_file_url: Optional[str] = Field(None, alias="rawFileUrl")
 
     @field_validator("submitted_at", mode="before")
     @classmethod
