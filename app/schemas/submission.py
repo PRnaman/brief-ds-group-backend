@@ -35,7 +35,8 @@ class AgencyPlanSummary(BaseModel):
     agency_name: str = Field(alias="agencyName")
     status: str
     submitted_at: Optional[datetime] = Field(None, alias="submittedAt")
-    raw_file_url: Optional[str] = Field(None, alias="rawFileUrl")
+    plan_file_url: Optional[str] = Field(None, alias="planFileUrl")
+    plan_file_name: Optional[str] = Field(None, alias="planFileName")
 
     @field_validator("submitted_at", mode="before")
     @classmethod
@@ -47,8 +48,6 @@ class AgencyPlanSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 class AgencyPlanDetail(AgencyPlanSummary):
-    plan_file_name: Optional[str] = Field(None, alias="planFileName")
-    plan_file_url: Optional[str] = Field(None, alias="planFileUrl") 
     version_number: int = Field(alias="versionNumber")
     
     # New Fields

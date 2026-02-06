@@ -198,9 +198,13 @@ def list_briefs(
                 # Convert to Pydantic Model explicitly to ensure fields are populated
                 p_model = plan_schema.AgencyPlanSummary.model_validate(p)
                 
-                # HARDCODED for testing as requested
-                signed_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
-                p_model.raw_file_url = signed_url
+                # Logic: If DB has no plan_file_url, use hardcoded RAW link for testing
+                if not p.plan_file_url:
+                    signed_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
+                    p_model.plan_file_url = signed_url
+                
+                if not p.plan_file_name:
+                    p_model.plan_file_name = "Plan"
 
                 filtered_plans.append(p_model)
         
@@ -287,9 +291,13 @@ def get_brief_detail(
             # Convert to Pydantic Model explicitly
             p_model = plan_schema.AgencyPlanSummary.model_validate(p)
 
-            # HARDCODED for testing as requested
-            signed_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
-            p_model.raw_file_url = signed_url
+            # Logic: If DB has no plan_file_url, use hardcoded RAW link for testing
+            if not p.plan_file_url:
+                signed_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
+                p_model.plan_file_url = signed_url
+            
+            if not p.plan_file_name:
+                p_model.plan_file_name = "Plan"
             
             filtered_plans.append(p_model)
     
@@ -778,15 +786,21 @@ def get_plan_detail(
     # elif plan.flat_file_path:
     #     view_url = gcs.get_signed_url(plan.flat_file_path, method="GET") # Fallback
 
+    # Logic: If DB has no plan_file_url, use hardcoded RAW link for testing
+    final_plan_url = plan.plan_file_url
+    if not final_plan_url:
+        final_plan_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
+
+    final_plan_name = plan.plan_file_name or "Plan"
+
     return {
         "id": plan.id,
         "agencyId": plan.agency.id,
         "agencyName": plan.agency.name,
         "status": plan.status,
         "submittedAt": plan.submitted_at,
-        "rawFileUrl": "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415",
-        "planFileName": plan.plan_file_name,
-        "planFileUrl": view_url,
+        "planFileName": final_plan_name,
+        "planFileUrl": final_plan_url,
         "versionNumber": plan.version_number,
         "createdAt": plan.created_at,
         "updatedAt": plan.updated_at,
