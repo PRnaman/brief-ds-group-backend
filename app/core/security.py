@@ -38,14 +38,8 @@ async def get_current_user(api_key: str = Depends(api_key_header), db: Session =
     # Extract token (Bearer ...)
     token = api_key.replace("Bearer ", "") if "Bearer " in api_key else api_key
     
-    # 1. Check if token is numeric (since our ID is an integer)
-    if not token.isdigit():
-        raise HTTPException(
-            status_code=HTTP_403_FORBIDDEN, detail="Invalid token format. Must be numeric."
-        )
-
-    # DB Lookup
-    user = db.query(models.User).filter(models.User.id == int(token)).first()
+    # DB Lookup: Token is treated as User ID
+    user = db.query(models.User).filter(models.User.id == token).first()
     
     if not user:
         raise HTTPException(

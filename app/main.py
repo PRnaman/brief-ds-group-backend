@@ -551,7 +551,8 @@ def get_plan_detail(
         models.AgencyPlan.id == plan_id,
         models.AgencyPlan.brief_id == brief_id
     ).first()
-    
+
+    print(plan)    
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
 
@@ -560,10 +561,12 @@ def get_plan_detail(
 
     # Generate Production VIEW URL if file exists
     view_url = None
-    if plan.validated_file_path:
-        view_url = gcs.get_signed_url(plan.validated_file_path, method="GET")
-    elif plan.flat_file_path:
-        view_url = gcs.get_signed_url(plan.flat_file_path, method="GET") # Fallback
+    if plan.plan_file_url:
+        view_url = generate_presigned_get_url(plan.plan_file_url)
+    # if plan.validated_file_path:
+    #     view_url = gcs.get_signed_url(plan.validated_file_path, method="GET")
+    # elif plan.flat_file_path:
+    #     view_url = gcs.get_signed_url(plan.flat_file_path, method="GET") # Fallback
 
     return {
         "id": plan.id,
