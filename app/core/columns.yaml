@@ -1,0 +1,11 @@
+required_columns:
+  - Date
+  - Channel
+  - Impressions
+  - Cost
+
+optional_columns:
+  - Clicks
+  - CTR
+  - Reach
+  - Frequency

@@ -19,6 +19,10 @@ Thumbs.db
 check_db_status.py
 mock_data.json
 *.postman_collection.json
+*.json
+*.xlsx
+*.txt
+*.pyc
 
 # Git settings (Optional: keeping this is safer)
 # .gitignore

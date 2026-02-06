@@ -3,12 +3,20 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+import os
+from dotenv import load_dotenv
+import yaml
+# Load environment variables from .env file
+load_dotenv()
+
+print(f"DEBUG: GCS_BUCKET_NAME={os.getenv('GCS_BUCKET_NAME')}")
+print(f"DEBUG: GOOGLE_APPLICATION_CREDENTIALS={os.getenv('GOOGLE_APPLICATION_CREDENTIALS')}")
 
 from app.db import models, session
 from app.schemas import brief as brief_schema
 from app.schemas import submission as plan_schema # Renamed for clarity
 from app.schemas import user as user_schema
-from app.core import security
+from app.core import security, gcs, exceptions
 
 from contextlib import asynccontextmanager
 
@@ -25,7 +33,11 @@ app = FastAPI(title="Brief Ecosystem - Production API", lifespan=lifespan)
 
  
 # CORS - Add this block RIGHT AFTER app = FastAPI()
+# CORS - Add this block RIGHT AFTER app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+
+# Register Global Exception Handler
+app.add_exception_handler(exceptions.BriefAppException, exceptions.global_exception_handler)
  
 @app.get("/health")
 async def health():
@@ -43,8 +55,8 @@ def login(payload: user_schema.LoginRequest, db: Session = Depends(session.get_d
     user_record = db.query(models.User).filter(models.User.email == payload.email).first()
     
     # Real Hashing Verification
-    # if not user_record or not security.verify_password(payload.password, user_record.password):
-    #     raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user_record or not security.verify_password(payload.password, user_record.password):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
     
     return {
         "token": str(user_record.id),
@@ -316,112 +328,214 @@ def get_brief_detail(
 
 # --- GCS UPLOAD HANDSHAKE ---
 
-# --- GCS STORAGE HELPER (Production Ready) ---
-def generate_presigned_put_url(blob_name: str, bucket_name: str = "brief-ecosystem-bucket"):
-    """
-    Generates a signed URL for uploading to GCS.
-    To use for real, install 'google-cloud-storage' and uncomment the logic below.
-    """
-    # try:
-    #     from google.cloud import storage
-    #     import datetime
-    #     storage_client = storage.Client()
-    #     bucket = storage_client.bucket(bucket_name)
-    #     blob = bucket.blob(blob_name)
-    #     url = blob.generate_signed_url(
-    #         version="v4",
-    #         expiration=datetime.timedelta(minutes=10),
-    #         method="PUT",
-    #         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    #     )
-    #     return url
-    # except Exception:
-    #     # Fallback to simulation during development
-    return f"https://storage.googleapis.com/{bucket_name}/{blob_name}?X-Goog-Signature=WORKING_PRODUCTION_MOCK"
-
-def generate_presigned_get_url(blob_name: str, bucket_name: str = "brief-ecosystem-bucket"):
-    """Generates a signed URL for viewing/downloading from GCS."""
-    # Logic similar to above but with method="GET"
-    return f"https://storage.googleapis.com/{bucket_name}/{blob_name}?X-Goog-Signature=GET_PRODUCTION_MOCK"
-
 # --- AGENCY PLAN WORKFLOW (GCS HANDSHAKE) ---
 
-@app.get("/briefs/{brief_id}/upload")
-def request_upload_url(
+@app.get("/briefs/{brief_id}/plans/{plan_id}/upload-url", response_model=plan_schema.UploadUrlResponse)
+def get_upload_url(
     brief_id: int,
+    plan_id: int,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.verify_agency)
 ):
     """
-    AGENCY ONLY: STEP 1 - Generate the Plan UUID and the Working Presigned URL.
+    Step 1: Get the Presigned URL for uploading the RAW file.
     """
-    # 1. Look for existing slot
+    # 1. Verify Plan Ownership
     plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.id == plan_id,
         models.AgencyPlan.brief_id == brief_id,
         models.AgencyPlan.agency_id == current_user["agency_id"]
     ).first()
     
     if not plan:
-        raise HTTPException(status_code=404, detail="No slot found for this agency in this brief.")
+        raise HTTPException(status_code=404, detail="Plan not found or access denied.")
 
-    # 2. Form the folder path using the PRE-EXISTING Plan UUID
-    file_path = f"{brief_id}/{plan.id}/plan.xlsx"
+    # 2. Construct Path: brief_id/plan_id/raw/plan.xlsx
+    # We enforce a standard filename 'plan.xlsx' to keep things simple and predictable.
+    upload_path = f"{brief_id}/{plan.id}/raw/plan.xlsx"
     
-    # 3. Generate the ORIGINAL Working URL
-    upload_url = generate_presigned_put_url(file_path)
+    # 3. Generate Signed PUT URL
+    upload_url = gcs.get_signed_url(upload_path, method="PUT", content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     
     return {
         "uploadUrl": upload_url,
-        "uploadPath": file_path,
-        "planId": plan.id, 
-        "expiresIn": "10 minutes"
+        "planId": plan.id,
+        "expiresIn": "15 minutes"
     }
 
-@app.post("/briefs/{brief_id}/upload")
-def confirm_upload(
+
+def _external_validation_service_mock(raw_path: str, brief_id: int, plan_id: int):
+    """
+    Simulates the External Validation Service (Validation Logic).
+    - It now physically copies the RAW file to the FLAT path in GCS 
+      so downstream testing (Step 3) works with real files.
+    """
+    import yaml
+    flat_path = f"{brief_id}/{plan_id}/flat/plan_flat.xlsx"
+    
+    # 1. PHYSICAL FILE HANDSHAKE (Mocking the external service upload)
+    try:
+        # We use our gcs client to copy the file to simulate the service 'creating' it
+        bucket = gcs._get_bucket()
+        source_blob = bucket.blob(raw_path)
+        # In reality, this would be a different file, but for testing, we just copy it.
+        bucket.copy_blob(source_blob, bucket, flat_path)
+        print(f"DEBUG: Mock service copied {raw_path} to {flat_path}")
+    except Exception as e:
+        print(f"DEBUG: Mock service failed to create flat file: {e}")
+
+    # 2. Load Configuration from YAML
+    yaml_path = os.path.join("app", "core", "columns.yaml")
+    with open(yaml_path, "r") as f:
+        config = yaml.safe_load(f)
+    
+    required_columns = config.get("required_columns", [])
+    optional_columns = config.get("optional_columns", [])
+    
+    # 3. HARDCODED MOCK AI PREDICTIONS
+    # These represent the mapping of [Standard Column] -> [Header in your file]
+    ai_mappings = {
+        "Date": "Campaign Date", 
+        "Impressions": "Est. Impressions",
+        "Cost": "Total Cost",
+        "Channel": "Media Channel"
+    }
+    
+    return {
+        "flat_path": flat_path,
+        "ai_mappings": ai_mappings,
+        "required_columns": required_columns,
+        "optional_columns": optional_columns
+    }
+
+@app.post("/briefs/{brief_id}/plans/{plan_id}/validate-columns", response_model=plan_schema.ValidateColumnsResponse)
+def validate_columns(
     brief_id: int,
-    payload: plan_schema.ConfirmUploadRequest,
+    plan_id: int,
     db: Session = Depends(session.get_db),
     current_user: dict = Depends(security.verify_agency)
 ):
     """
-    AGENCY ONLY: STEP 2 - User sends the link/path and we store it.
+    Step 2: Trigger Senior API to validate raw file and generate mappings.
     """
     plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.id == plan_id,
         models.AgencyPlan.brief_id == brief_id,
         models.AgencyPlan.agency_id == current_user["agency_id"]
     ).first()
     
     if not plan:
-        raise HTTPException(status_code=404, detail="Plan slot not found.")
-        
-    # Versioning Logic: If a file already exists, we increment the version
-    if plan.plan_file_url:
-        plan.version_number += 1
-        action_detail = f"New version (v{plan.version_number}) uploaded. Path: {payload.file_url}"
-    else:
-        action_detail = f"Initial plan file uploaded. Path: {payload.file_url}"
+        raise HTTPException(status_code=404, detail="Plan not found.")
 
-    # Store the final file path
-    plan.plan_file_url = payload.file_url 
-    plan.plan_file_name = payload.file_url.split("/")[-1]
+    # 1. Check if RAW file exists (skipped for now, assumed flow)
+    raw_path = f"{brief_id}/{plan.id}/raw/plan.xlsx"
     
-    # NEW STATUS FLOW: PENDING_REVIEW
-    plan.status = "PENDING_REVIEW"
+    # 2. Call External Validation Service (Mock)
+    validation_result = _external_validation_service_mock(raw_path, brief_id, plan.id)
+    
+    # 3. STRICT VALIDATION: Check if all REQUIRED columns are present in the AI Mappings
+    # (i.e., did the AI find a match for every required column?)
+    # or simple check if the FILE has the potential to map to them. 
+    # For this mock, we assume 'ai_mappings' keys are the Standard Columns found.
+    
+    found_columns = validation_result["ai_mappings"].keys() # keys are the Standard Names
+    missing_required = [col for col in validation_result["required_columns"] if col not in found_columns]
+    
+    if missing_required:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Validation Failed: Missing required columns: {', '.join(missing_required)}"
+        )
+    
+    # 4. Update DB
+    plan.flat_file_path = validation_result["flat_path"]
+    plan.ai_mappings = validation_result["ai_mappings"]
+    plan.raw_file_path = raw_path # Persist the raw path
     plan.updated_at = models.get_utc_now()
     plan.updated_by = current_user["id"]
     
-    # Audit History
+    # 5. Log History
     history = models.HistoryTrail(
         agency_plan_id=plan.id,
-        action="FILE_UPLOADED",
+        action="COLUMNS_VALIDATED",
         user_id=current_user["id"],
-        details=action_detail
+        details="AI Validation completed. Columns mapped."
     )
     db.add(history)
     db.commit()
     
-    return {"status": "success", "newStatus": plan.status, "version": plan.version_number}
+    # 6. Generate View URL
+    flat_url = gcs.get_signed_url(plan.flat_file_path, method="GET")
+    
+    return {
+        "flatFileUrl": flat_url,
+        "aiMappings": plan.ai_mappings,
+        "requiredColumns": validation_result["required_columns"],
+        "optionalColumns": validation_result["optional_columns"]
+    }
+
+@app.post("/briefs/{brief_id}/plans/{plan_id}/update-columns", response_model=plan_schema.UpdateColumnsResponse)
+def update_columns(
+    brief_id: int,
+    plan_id: int,
+    payload: plan_schema.UpdateColumnsRequest,
+    db: Session = Depends(session.get_db),
+    current_user: dict = Depends(security.verify_agency)
+):
+    """
+    Step 3: Confirm mappings, rename columns, and finalize the file.
+    """
+    plan = db.query(models.AgencyPlan).filter(
+        models.AgencyPlan.id == plan_id,
+        models.AgencyPlan.brief_id == brief_id,
+        models.AgencyPlan.agency_id == current_user["agency_id"]
+    ).first()
+    
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found.")
+
+    if not plan.flat_file_path:
+        raise exceptions.ValidationException("Flat file not found. Please run validation first.")
+
+    # 1. Read Flat File (Simulated Read)
+    # Ideally: content = gcs.read_file(plan.flat_file_path)
+    # df = pd.read_excel(io.BytesIO(content))
+    # df.rename(columns=payload.human_mappings, inplace=True)
+    
+    # 2. Upload Validated File (Simulated Upload)
+    validated_path = f"{brief_id}/{plan.id}/validated_column/plan_final.xlsx"
+    
+    # gcs.upload_file_from_memory(df.to_excel(), validated_path) # Future implementation
+    
+    
+    # Store the final file path
+    plan.validated_column_file_path = validated_path # New Column Name
+    plan.plan_file_url = validated_path # Point legacy URL to the latest validated version
+    plan.plan_file_name = validated_path.split("/")[-1]
+    
+    plan.status = "DRAFT" # Still draft until submitted
+    plan.updated_at = models.get_utc_now()
+    plan.updated_by = current_user["id"]
+    
+    # 4. Log History
+    history = models.HistoryTrail(
+        agency_plan_id=plan.id,
+        action="COLUMNS_UPDATED",
+        user_id=current_user["id"],
+        details="User confirmed/updated column mappings."
+    )
+    db.add(history)
+    db.commit()
+    
+    # 5. Return Final URL
+    final_url = gcs.get_signed_url(validated_path, method="GET")
+    
+    return {
+        "validatedFileUrl": final_url,
+        "status": "success"
+    }
+
+# Removed old endpoints: request_upload_url, confirm_upload, validate_rows
 
 @app.get("/briefs/{brief_id}/plans/{plan_id}", response_model=plan_schema.AgencyPlanDetail)
 def get_plan_detail(
@@ -446,8 +560,10 @@ def get_plan_detail(
 
     # Generate Production VIEW URL if file exists
     view_url = None
-    if plan.plan_file_url:
-        view_url = generate_presigned_get_url(plan.plan_file_url)
+    if plan.validated_file_path:
+        view_url = gcs.get_signed_url(plan.validated_file_path, method="GET")
+    elif plan.flat_file_path:
+        view_url = gcs.get_signed_url(plan.flat_file_path, method="GET") # Fallback
 
     return {
         "id": plan.id,
@@ -469,38 +585,7 @@ def get_plan_detail(
 
 # --- VALIDATION & SUBMISSION ENDPOINTS ---
 
-@app.post("/briefs/{brief_id}/validate-columns")
-def validate_columns(
-    brief_id: int,
-    payload: plan_schema.ValidateColumnsRequest,
-    db: Session = Depends(session.get_db),
-    current_user: dict = Depends(security.verify_agency)
-):
-    """Simulated column validation logic."""
-    plan = db.query(models.AgencyPlan).filter(
-        models.AgencyPlan.brief_id == brief_id,
-        models.AgencyPlan.agency_id == current_user["agency_id"]
-    ).first()
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan slot not found")
-
-    required_fields = ["Date", "Channel", "Impressions", "Cost"]
-    mapped_fields = [m.mapped_field for m in payload.mappings]
-    missing = [f for f in required_fields if f not in mapped_fields]
-    
-    if missing:
-        return {"status": "error", "message": f"Missing fields: {', '.join(missing)}", "isValid": False}
-        
-    return {"status": "success", "isValid": True, "mappingAccuracy": 0.98}
-
-@app.post("/briefs/{brief_id}/validate-rows")
-def validate_rows(
-    brief_id: int,
-    db: Session = Depends(session.get_db),
-    current_user: dict = Depends(security.verify_agency)
-):
-    """Simulated row-level validation."""
-    return {"status": "success", "isValid": True, "dataQualityScore": 0.92}
+# validate columns and rows replaced by new flow
 
 @app.post("/briefs/{brief_id}/submit")
 def submit_plan(
