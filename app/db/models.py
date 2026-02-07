@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Date, Integer
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Date, Integer, Boolean
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
@@ -52,6 +52,7 @@ class User(Base):
     # Relationships
     client = relationship("Client", back_populates="users", foreign_keys=[client_id])
     agency = relationship("Agency", back_populates="users", foreign_keys=[agency_id])
+    tokens = relationship("Token", back_populates="user")
 
     @property
     def agency_name(self):
@@ -144,6 +145,20 @@ class AgencyPlan(Base):
     @property
     def agency_name(self):
         return self.agency.name if self.agency else ""
+
+class Token(Base):
+    __tablename__ = "tokens"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    access_token = Column(String, unique=True, index=True, nullable=False)
+    is_active = Column(Boolean, default=True)
+    
+    created_at = Column(DateTime, default=get_utc_now)
+    expires_at = Column(DateTime, nullable=False)
+    
+    # Relationships
+    user = relationship("User", back_populates="tokens")
 
 class HistoryTrail(Base):
     __tablename__ = "history_trail"

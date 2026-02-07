@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
-from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import secrets
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import yaml
 import openpyxl
@@ -52,16 +53,39 @@ def read_root():
 @app.post("/login", response_model=user_schema.LoginResponse)
 def login(payload: user_schema.LoginRequest, db: Session = Depends(session.get_db)):
     """
-    Real DB Login: Validates against 'users' table.
+    Real DB Login: Validates against 'users' table and generates a session token.
+    1. Validates password.
+    2. Deactivates all previous active tokens for the user (Single Session).
+    3. Generates a new Token with 10-day expiry.
     """
+    
     user_record = db.query(models.User).filter(models.User.email == payload.email).first()
     
     # Real Hashing Verification
     if not user_record or not security.verify_password(payload.password, user_record.password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
+    # 2. Single Session Check: Deactivate all old tokens for this user
+    db.query(models.Token).filter(
+        models.Token.user_id == user_record.id,
+        models.Token.is_active == True
+    ).update({"is_active": False})
+    
+    # 3. Create New Token
+    new_token_str = secrets.token_hex(32)
+    expires_at = models.get_utc_now() + timedelta(days=10)
+    
+    new_token_record = models.Token(
+        user_id=user_record.id,
+        access_token=new_token_str,
+        expires_at=expires_at,
+        is_active=True
+    )
+    db.add(new_token_record)
+    db.commit()
+    
     return {
-        "token": str(user_record.id),
+        "token": new_token_str,
         "user": {
             "email": user_record.email,
             "name": user_record.name,
@@ -199,10 +223,8 @@ def list_briefs(
                 # Convert to Pydantic Model explicitly to ensure fields are populated
                 p_model = plan_schema.AgencyPlanSummary.model_validate(p)
                 
-                # Logic: If DB has no plan_file_url, use hardcoded RAW link for testing
-                if not p.plan_file_url:
-                    signed_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
-                    p_model.plan_file_url = signed_url
+                # User Request (Temporary): Hardcode URL to Brief 1 / Plan 1 Raw File for testing
+                p_model.plan_file_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
                 
                 if not p.plan_file_name:
                     p_model.plan_file_name = "Plan"
@@ -292,10 +314,8 @@ def get_brief_detail(
             # Convert to Pydantic Model explicitly
             p_model = plan_schema.AgencyPlanSummary.model_validate(p)
 
-            # Logic: If DB has no plan_file_url, use hardcoded RAW link for testing
-            if not p.plan_file_url:
-                signed_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
-                p_model.plan_file_url = signed_url
+            # User Request (Temporary): Hardcode URL to Brief 1 / Plan 1 Raw File for testing
+            p_model.plan_file_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
             
             if not p.plan_file_name:
                 p_model.plan_file_name = "Plan"
@@ -729,8 +749,9 @@ def update_columns(
         raise HTTPException(status_code=404, detail="Plan not found.")
 
     # 1. Define Paths Dynamically
-    raw_path = f"brief_media_files/{brief_id}/{plan.id}/raw/plan.xlsx"
-    local_raw = f"tmp/update_raw_{plan.id}.xlsx"
+    # UPDATE: We now download the FLAT file (output of Extract) instead of the RAW file.
+    flat_path = plan.flat_file_path or f"brief_media_files/{brief_id}/{plan.id}/flat/plan_flat.xlsx"
+    local_flat = f"tmp/update_flat_{plan.id}.xlsx"
     local_validated = f"tmp/update_validated_{plan.id}.xlsx"
     os.makedirs("tmp", exist_ok=True)
 
@@ -742,20 +763,19 @@ def update_columns(
             final_mappings[str(k)] = v 
 
     try:
-        # 3. Download Raw File
-        gcs.download_file(raw_path, local_raw)
+        # 3. Download Flat File
+        gcs.download_file(flat_path, local_flat)
         
-        # 3. Re-process (Crop rows + Rename + DELETE UNMAPPED)
-        # We use header_row=4 (Row 5) as per current Mock logic.
+        # 3. Re-process (Rename ONLY as rows are already cropped in flat)
         _process_excel_extract(
-            local_raw, 
+            local_flat, 
             local_validated, 
-            header_row=4, 
+            header_row=1, # No more cropping needed
             mappings={int(k): v for k, v in final_mappings.items()}
         )
         
         # 4. Upload to GCS
-        validated_blob = f"brief_media_files/{brief_id}/{plan.id}/validated/plan_final.xlsx"
+        validated_blob = f"brief_media_files/{brief_id}/{plan.id}/validated-columns/plan_final.xlsx"
         gcs.upload_file(local_validated, validated_blob)
         
         # 5. Update DB
@@ -787,7 +807,7 @@ def update_columns(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
     finally:
-        if os.path.exists(local_raw): os.remove(local_raw)
+        if 'local_flat' in locals() and os.path.exists(local_flat): os.remove(local_flat)
         if os.path.exists(local_validated): os.remove(local_validated)
 
 # Removed old endpoints: request_upload_url, confirm_upload, validate_rows
@@ -822,10 +842,8 @@ def get_plan_detail(
     # elif plan.flat_file_path:
     #     view_url = gcs.get_signed_url(plan.flat_file_path, method="GET") # Fallback
 
-    # Logic: If DB has no plan_file_url, use hardcoded RAW link for testing
-    final_plan_url = plan.plan_file_url
-    if not final_plan_url:
-        final_plan_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
+    # User Request (Temporary): Hardcode URL to Brief 1 / Plan 1 Raw File for testing
+    final_plan_url = "https://storage.googleapis.com/brief-ecosystem-bucket/brief_media_files/1/1/raw/plan.xlsx?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=brief-ecosystem-service-account%40brief-ecosystem.iam.gserviceaccount.com%2F20260206%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260206T113515Z&X-Goog-Expires=864000&X-Goog-SignedHeaders=host&X-Goog-Signature=1f52b7b51079d8544f514b7e9b38029d5926ec39d5e30538a7985be0b1d3d63b27b049d10e527d498c894200782782161f5f24f56847849e757d590494025aa74068571003714b6c7028104d498305886361664e723055415714392661331776ce35384728518868984920251326402431713508486001888062829023180415"
 
     final_plan_name = plan.plan_file_name or "Plan"
 

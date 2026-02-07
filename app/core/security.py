@@ -24,11 +24,8 @@ def get_password_hash(password):
 
 async def get_current_user(api_key: str = Depends(api_key_header), db: Session = Depends(session.get_db)):
     """
-    Validates token against the USERS table in the Database.
-    Token is assumed to be the USER ID for simplicity in this implementation, 
-    or a session token stored in Redis/DB in a full production app.
-    
-    For this phase, we will use the USER ID as the Bearer Token to keep it stateless but DB-backed.
+    Validates token against the TOKENS table in the Database.
+    Token must be active and not expired (10 days limit).
     """
     if not api_key:
         raise HTTPException(
@@ -36,17 +33,28 @@ async def get_current_user(api_key: str = Depends(api_key_header), db: Session =
         )
     
     # Extract token (Bearer ...)
-    token = api_key.replace("Bearer ", "") if "Bearer " in api_key else api_key
+    token_str = api_key.replace("Bearer ", "") if "Bearer " in api_key else api_key
     
-    # DB Lookup: Token is treated as User ID
-    user = db.query(models.User).filter(models.User.id == token).first()
+    # DB Lookup: Check Tokens table
+    now = models.get_utc_now()
+    token_record = db.query(models.Token).filter(
+        models.Token.access_token == token_str,
+        models.Token.is_active == True,
+        models.Token.expires_at > now
+    ).first()
     
-    if not user:
+    if not token_record:
         raise HTTPException(
-            status_code=HTTP_403_FORBIDDEN, detail="Invalid token or user not found"
+            status_code=HTTP_403_FORBIDDEN, detail="Invalid, expired, or deactivated token"
         )
     
-    # Convert SQLAlchemy object to dictionary for compatibility with existing code
+    user = token_record.user
+    if not user:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN, detail="User associated with token not found"
+        )
+    
+    # Convert SQLAlchemy object to dictionary for compatibility
     return {
         "id": user.id,
         "email": user.email,
