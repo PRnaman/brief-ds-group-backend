@@ -129,10 +129,31 @@ def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int 
         service_account_email = _get_service_account_email()
         print(f"DEBUG: Generating Signed URL for {blob_name} using Identity: {service_account_email}")
 
-        # If we still don't have an email, v4 signing will likely fail in Cloud Run.
-        if not service_account_email:
-             print("WARNING: No Service Account Email found. Signed URL might fail.")
+        # In Cloud Run, credentials don't have a private key.
+        # We must use the IAM Signer to delegate signing to Google's IAM API.
+        if service_account_email and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            try:
+                import google.auth
+                import google.auth.iam
+                from google.auth.transport.requests import Request
+                
+                credentials, project = google.auth.default()
+                auth_request = Request()
+                
+                # This signer uses the IAM signBlob API (requires 'Service Account Token Creator' role)
+                signer = google.auth.iam.Signer(auth_request, credentials, service_account_email)
+                
+                return blob.generate_signed_url(
+                    version="v4",
+                    expiration=datetime.timedelta(minutes=expiration_minutes),
+                    method=method,
+                    content_type=content_type,
+                    signer=signer
+                )
+            except Exception as iam_e:
+                print(f"DEBUG: IAM Signer creation failed: {iam_e}. Falling back to default.")
 
+        # Default fallback (works locally with JSON key)
         return blob.generate_signed_url(
             version="v4",
             expiration=datetime.timedelta(minutes=expiration_minutes),
