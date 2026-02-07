@@ -48,7 +48,7 @@ def upload_file(local_path: str, blob_name: str, content_type: str = None) -> st
         raise GCSOperationError(f"Upload failed: {str(e)}")
 
 def download_file(blob_name: str, local_path: str):
-    """Downloads a blob to a local file."""
+    """Downloads a blob to a local file using the DEFAULT bucket."""
     try:
         bucket = _get_bucket()
         blob = bucket.blob(blob_name)
@@ -57,6 +57,20 @@ def download_file(blob_name: str, local_path: str):
         blob.download_to_filename(local_path)
     except Exception as e:
         raise GCSOperationError(f"Download failed: {str(e)}")
+
+def download_from_bucket(bucket_name: str, blob_name: str, local_path: str):
+    """Downloads a blob to a local file from a SPECIFIC bucket."""
+    try:
+        client = _get_storage_client()
+        if not client:
+            raise GCSOperationError("GCS Client not initialized.")
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        blob.download_to_filename(local_path)
+    except Exception as e:
+        raise GCSOperationError(f"Download from {bucket_name} failed: {str(e)}")
 
 def read_file(blob_name: str) -> bytes:
     """Reads a blob's content directly into memory."""
