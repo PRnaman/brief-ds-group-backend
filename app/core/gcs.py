@@ -81,6 +81,40 @@ def read_file(blob_name: str) -> bytes:
     except Exception as e:
         raise GCSOperationError(f"Read file failed: {str(e)}")
 
+def _get_service_account_email():
+    """
+    Robustly finds the service account email.
+    Works in Local, Cloud Run, and with explicit configs.
+    """
+    client = _get_storage_client()
+    if not client:
+        return None
+        
+    # 1. Try credentials object directly
+    try:
+        if hasattr(client.get_service_account_email, "__call__"):
+            email = client.get_service_account_email()
+            if email: return email
+    except:
+        pass
+        
+    # 2. Check Environment Variable (User can set this as a backup)
+    env_email = os.getenv("SERVICE_ACCOUNT_EMAIL")
+    if env_email: return env_email
+    
+    # 3. Check Metadata Server (Internal GCP logic for Cloud Run)
+    import httpx
+    try:
+        # Standard GCP metadata URL for service account email
+        meta_url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
+        resp = httpx.get(meta_url, headers={"Metadata-Flavor": "Google"}, timeout=1.0)
+        if resp.status_code == 200:
+            return resp.text.strip()
+    except Exception:
+        pass
+        
+    return None
+
 def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int = 15, content_type: str = None) -> str:
     """
     Generates a signed URL for a specific blob.
@@ -97,12 +131,7 @@ def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int 
         
         # In Cloud Run, credentials often don't have a private key.
         # We use the Service Account Email to delegate signing to GCS internal IAM service.
-        service_account_email = None
-        if hasattr(client.get_service_account_email, "__call__"):
-            try:
-                service_account_email = client.get_service_account_email()
-            except:
-                pass
+        service_account_email = _get_service_account_email()
 
         return blob.generate_signed_url(
             version="v4",
@@ -112,8 +141,6 @@ def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int 
             service_account_email=service_account_email
         )
     except Exception as e:
-        # Final fallback: if v4 fails, GCS might support older signing if configured, 
-        # but usually, the service_account_email fix above is what Cloud Run needs.
         raise GCSOperationError(f"Signed URL generation failed: {str(e)}")
 
 def list_blobs(prefix: str):
