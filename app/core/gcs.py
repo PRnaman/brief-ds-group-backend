@@ -83,37 +83,31 @@ def read_file(blob_name: str) -> bytes:
 
 def _get_service_account_email():
     """
-    Robustly finds the service account email.
-    Works in Local, Cloud Run, and with explicit configs.
+    Robustly finds the service account email using official google-auth.
     """
-    client = _get_storage_client()
-    if not client:
-        return None
-        
-    # 1. Try credentials object directly
     try:
-        if hasattr(client.get_service_account_email, "__call__"):
-            email = client.get_service_account_email()
-            if email: return email
-    except:
-        pass
+        import google.auth
+        credentials, project = google.auth.default()
         
-    # 2. Check Environment Variable (User can set this as a backup)
-    env_email = os.getenv("SERVICE_ACCOUNT_EMAIL")
-    if env_email: return env_email
-    
-    # 3. Check Metadata Server (Internal GCP logic for Cloud Run)
-    import httpx
-    try:
-        # Standard GCP metadata URL for service account email
+        # In GCP environments (Cloud Run, GAE, GCE), credentials will have the email
+        if hasattr(credentials, 'service_account_email'):
+            return credentials.service_account_email
+        
+        # Fallback for some library versions/specific ADC setups
+        if hasattr(credentials, 'signer_email'):
+            return credentials.signer_email
+            
+        # Last resort fallback to the Metadata Server
+        import httpx
         meta_url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
-        resp = httpx.get(meta_url, headers={"Metadata-Flavor": "Google"}, timeout=1.0)
+        resp = httpx.get(meta_url, headers={"Metadata-Flavor": "Google"}, timeout=2.0)
         if resp.status_code == 200:
             return resp.text.strip()
-    except Exception:
-        pass
+            
+    except Exception as e:
+        print(f"DEBUG: Failed to discover service account email: {e}")
         
-    return None
+    return os.getenv("SERVICE_ACCOUNT_EMAIL") # Allow manual override
 
 def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int = 15, content_type: str = None) -> str:
     """
@@ -122,16 +116,14 @@ def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int 
     """
     client = _get_storage_client()
     if not client:
-         # Mock for local dev if no client
         return f"https://storage.googleapis.com/{BUCKET_NAME}/{blob_name}?mock_sig=true"
 
     try:
         bucket = _get_bucket()
         blob = bucket.blob(blob_name)
         
-        # In Cloud Run, credentials often don't have a private key.
-        # We use the Service Account Email to delegate signing to GCS internal IAM service.
         service_account_email = _get_service_account_email()
+        print(f"DEBUG: Generating Signed URL for {blob_name} using Identity: {service_account_email}")
 
         return blob.generate_signed_url(
             version="v4",
