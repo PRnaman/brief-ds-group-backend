@@ -95,13 +95,25 @@ def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int 
         bucket = _get_bucket()
         blob = bucket.blob(blob_name)
         
+        # In Cloud Run, credentials often don't have a private key.
+        # We use the Service Account Email to delegate signing to GCS internal IAM service.
+        service_account_email = None
+        if hasattr(client.get_service_account_email, "__call__"):
+            try:
+                service_account_email = client.get_service_account_email()
+            except:
+                pass
+
         return blob.generate_signed_url(
             version="v4",
             expiration=datetime.timedelta(minutes=expiration_minutes),
             method=method,
-            content_type=content_type
+            content_type=content_type,
+            service_account_email=service_account_email
         )
     except Exception as e:
+        # Final fallback: if v4 fails, GCS might support older signing if configured, 
+        # but usually, the service_account_email fix above is what Cloud Run needs.
         raise GCSOperationError(f"Signed URL generation failed: {str(e)}")
 
 def list_blobs(prefix: str):
