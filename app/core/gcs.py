@@ -83,31 +83,35 @@ def read_file(blob_name: str) -> bytes:
 
 def _get_service_account_email():
     """
-    Robustly finds the service account email using official google-auth.
+    Robustly finds the service account email using official google-auth and metadata server.
     """
     try:
+        # 1. Check Environment Variable (Highest priority)
+        env_email = os.getenv("SERVICE_ACCOUNT_EMAIL")
+        if env_email: return env_email
+
+        # 2. Try credentials object
         import google.auth
         credentials, project = google.auth.default()
         
-        # In GCP environments (Cloud Run, GAE, GCE), credentials will have the email
-        if hasattr(credentials, 'service_account_email'):
-            return credentials.service_account_email
+        if hasattr(credentials, 'service_account_email') and credentials.service_account_email:
+            # If it's literally 'default', we must fetch the real one from metadata
+            if credentials.service_account_email != "default":
+                return credentials.service_account_email
         
-        # Fallback for some library versions/specific ADC setups
-        if hasattr(credentials, 'signer_email'):
-            return credentials.signer_email
-            
-        # Last resort fallback to the Metadata Server
+        # 3. Dedicated Metadata Server call (Source of truth in Cloud Run)
         import httpx
         meta_url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
         resp = httpx.get(meta_url, headers={"Metadata-Flavor": "Google"}, timeout=2.0)
         if resp.status_code == 200:
-            return resp.text.strip()
+            email = resp.text.strip()
+            print(f"DEBUG: Metadata Server returned email: {email}")
+            return email
             
     except Exception as e:
         print(f"DEBUG: Failed to discover service account email: {e}")
         
-    return os.getenv("SERVICE_ACCOUNT_EMAIL") # Allow manual override
+    return None
 
 def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int = 15, content_type: str = None) -> str:
     """
@@ -124,6 +128,10 @@ def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int 
         
         service_account_email = _get_service_account_email()
         print(f"DEBUG: Generating Signed URL for {blob_name} using Identity: {service_account_email}")
+
+        # If we still don't have an email, v4 signing will likely fail in Cloud Run.
+        if not service_account_email:
+             print("WARNING: No Service Account Email found. Signed URL might fail.")
 
         return blob.generate_signed_url(
             version="v4",
