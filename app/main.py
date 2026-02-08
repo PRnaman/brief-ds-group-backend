@@ -410,7 +410,7 @@ def get_upload_url(
     upload_path = f"brief_media_files/{brief_id}/{plan.id}/raw/plan.xlsx"
     
     # 3. Generate Signed PUT URL
-    upload_url = gcs.get_signed_url(upload_path, method="PUT", content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    upload_url = gcs.get_signed_url(upload_path, method="PUT", expiration_minutes=8640, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     
     # 4. PERSIST the intended raw path and RESET processing states
     # This ensures that if a user re-uploads, the latest URL points to the new RAW file.
@@ -454,7 +454,7 @@ def _call_senior_api_extract(gcs_path: str):
     
     try:
         # 5 minutes timeout (300s) as requested for external AI calls
-        response = httpx.post(url, json=payload, timeout=300.0)
+        response = httpx.post(url, json=payload, timeout=600.0)  # 10 minutes
         
         if response.status_code != 200:
             raise HTTPException(status_code=response.status_code, detail=f"Senior API Error: {response.text}")
@@ -673,7 +673,7 @@ def extract_columns(
     mandatory, optional = _get_schema_columns()
     
     # 9. Generate Signed URL for Flat File
-    flat_url = gcs.get_signed_url(flat_blob_name, method="GET")
+    flat_url = gcs.get_signed_url(flat_blob_name, method="GET", expiration_minutes=8640)  # 6 days
     
     # 10. Return Response
     # Convert int keys back to string for Pydantic response if schema says Dict[str, str]
@@ -747,7 +747,7 @@ def validate_columns(
     db.commit()
     
     # 6. Generate View URL
-    flat_url = gcs.get_signed_url(plan.flat_file_path, method="GET")
+    flat_url = gcs.get_signed_url(plan.flat_file_path, method="GET", expiration_minutes=8640)  # 6 days
     
     return {
         "flatFileUrl": flat_url,
@@ -824,7 +824,7 @@ def update_columns(
         db.commit()
         
         # 7. Generate Signed URL
-        final_url = gcs.get_signed_url(validated_blob, method="GET")
+        final_url = gcs.get_signed_url(validated_blob, method="GET", expiration_minutes=8640)  # 6 days
         
         return {
             "validatedFileUrl": final_url,
