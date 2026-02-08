@@ -113,6 +113,18 @@ def _get_service_account_email():
         
     return None
 
+class IAMSigner:
+    """Wrapper that provides a sign_bytes method using the IAM API."""
+    def __init__(self, credentials, email):
+        self.credentials = credentials
+        self.email = email
+
+    def sign_bytes(self, bytes_to_sign):
+        from google.auth.iam import Signer
+        from google.auth.transport.requests import Request
+        signer = Signer(Request(), self.credentials, self.email)
+        return signer.sign(bytes_to_sign)
+
 def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int = 15, content_type: str = None) -> str:
     """
     Generates a signed URL for a specific blob.
@@ -130,25 +142,20 @@ def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int 
         print(f"DEBUG: Generating Signed URL for {blob_name} using Identity: {service_account_email}")
 
         # In Cloud Run, credentials don't have a private key.
-        # We must use the IAM Signer to delegate signing to Google's IAM API.
+        # We wrap them in a signer that uses the IAM API.
         if service_account_email and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             try:
                 import google.auth
-                import google.auth.iam
-                from google.auth.transport.requests import Request
-                
                 credentials, project = google.auth.default()
-                auth_request = Request()
-                
-                # This signer uses the IAM signBlob API (requires 'Service Account Token Creator' role)
-                signer = google.auth.iam.Signer(auth_request, credentials, service_account_email)
+                signer_creds = IAMSigner(credentials, service_account_email)
                 
                 return blob.generate_signed_url(
                     version="v4",
                     expiration=datetime.timedelta(minutes=expiration_minutes),
                     method=method,
                     content_type=content_type,
-                    signer=signer
+                    service_account_email=service_account_email,
+                    credentials=signer_creds
                 )
             except Exception as iam_e:
                 print(f"DEBUG: IAM Signer creation failed: {iam_e}. Falling back to default.")
