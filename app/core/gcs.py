@@ -114,16 +114,42 @@ def _get_service_account_email():
     return None
 
 class IAMSigner:
-    """Wrapper that provides a sign_bytes method using the IAM API."""
+    """
+    Ultimate Signer for Cloud Run.
+    Bypasses library checks and calls the IAM signBlob REST API directly.
+    """
     def __init__(self, credentials, email):
         self.credentials = credentials
         self.email = email
 
     def sign_bytes(self, bytes_to_sign):
-        from google.auth.iam import Signer
+        import base64
+        import json
+        import httpx
         from google.auth.transport.requests import Request
-        signer = Signer(Request(), self.credentials, self.email)
-        return signer.sign(bytes_to_sign)
+        
+        # 1. Ensure we have a fresh token
+        if not self.credentials.valid:
+            self.credentials.refresh(Request())
+        
+        # 2. Call the Google IAM signBlob API
+        url = f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{self.email}:signBlob"
+        headers = {
+            "Authorization": f"Bearer {self.credentials.token}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "payload": base64.b64encode(bytes_to_sign).decode("utf-8")
+        }
+        
+        print(f"DEBUG: Requesting IAM Signature from {url}")
+        resp = httpx.post(url, headers=headers, json=payload, timeout=10.0)
+        
+        if resp.status_code != 200:
+            raise Exception(f"IAM REST signBlob failed ({resp.status_code}): {resp.text}")
+            
+        # 3. Decode the returned signature
+        return base64.b64decode(resp.json()["signedBlob"])
 
 def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int = 15, content_type: str = None) -> str:
     """
