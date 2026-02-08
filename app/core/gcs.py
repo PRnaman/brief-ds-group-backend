@@ -161,32 +161,71 @@ def get_signed_url(blob_name: str, method: str = "GET", expiration_minutes: int 
         return f"https://storage.googleapis.com/{BUCKET_NAME}/{blob_name}?mock_sig=true"
 
     try:
-        bucket = _get_bucket()
-        blob = bucket.blob(blob_name)
-        
         service_account_email = _get_service_account_email()
         print(f"DEBUG: Generating Signed URL for {blob_name} using Identity: {service_account_email}")
 
-        # In Cloud Run, credentials don't have a private key.
-        # We wrap them in a signer that uses the IAM API.
+        # In Cloud Run, we must build the signed URL manually
         if service_account_email and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             try:
                 import google.auth
-                credentials, project = google.auth.default()
-                signer_creds = IAMSigner(credentials, service_account_email)
+                import hashlib
+                from urllib.parse import quote
                 
-                return blob.generate_signed_url(
-                    version="v4",
-                    expiration=datetime.timedelta(minutes=expiration_minutes),
-                    method=method,
-                    content_type=content_type,
-                    service_account_email=service_account_email,
-                    credentials=signer_creds
-                )
+                credentials, project = google.auth.default()
+                signer = IAMSigner(credentials, service_account_email)
+                
+                # v4 Signing Algorithm (Manual Construction)
+                expiration = datetime.datetime.utcnow() + datetime.timedelta(minutes=expiration_minutes)
+                expiration_timestamp = int(expiration.timestamp())
+                datestamp = datetime.datetime.utcnow().strftime('%Y%m%d')
+                
+                # Canonical Request Components
+                canonical_uri = f"/{blob_name}"
+                credential_scope = f"{datestamp}/auto/storage/goog4_request"
+                credential = f"{service_account_email}/{credential_scope}"
+                
+                headers_to_sign = {}
+                if content_type:
+                    headers_to_sign['content-type'] = content_type
+                headers_to_sign['host'] = f"{BUCKET_NAME}.storage.googleapis.com"
+                
+                canonical_headers = ''.join([f"{k.lower()}:{v.strip()}\n" for k, v in sorted(headers_to_sign.items())])
+                signed_headers_str = ';'.join(sorted([k.lower() for k in headers_to_sign.keys()]))
+                
+                # Query Parameters
+                query_params = {
+                    'X-Goog-Algorithm': 'GOOG4-RSA-SHA256',
+                    'X-Goog-Credential': credential,
+                    'X-Goog-Date': datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ'),
+                    'X-Goog-Expires': str(expiration_minutes * 60),
+                    'X-Goog-SignedHeaders': signed_headers_str
+                }
+                canonical_query = '&'.join([f"{k}={quote(str(v), safe='')}" for k, v in sorted(query_params.items())])
+                
+                # Build Canonical Request
+                canonical_request = f"{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers_str}\nUNSIGNED-PAYLOAD"
+                canonical_request_hash = hashlib.sha256(canonical_request.encode()).hexdigest()
+                
+                # String to Sign
+                string_to_sign = f"GOOG4-RSA-SHA256\n{query_params['X-Goog-Date']}\n{credential_scope}\n{canonical_request_hash}"
+                
+                # Sign with IAM
+                signature_bytes = signer.sign_bytes(string_to_sign.encode())
+                signature_hex = signature_bytes.hex()
+                
+                # Final URL
+                signed_url = f"https://{BUCKET_NAME}.storage.googleapis.com{canonical_uri}?{canonical_query}&X-Goog-Signature={signature_hex}"
+                print(f"DEBUG: Successfully generated manual signed URL")
+                return signed_url
+                
             except Exception as iam_e:
-                print(f"DEBUG: IAM Signer creation failed: {iam_e}. Falling back to default.")
+                print(f"DEBUG: Manual signing failed: {iam_e}. Falling back to library.")
+                import traceback
+                traceback.print_exc()
 
-        # Default fallback (works locally with JSON key)
+        # Fallback for local development with JSON key
+        bucket = _get_bucket()
+        blob = bucket.blob(blob_name)
         return blob.generate_signed_url(
             version="v4",
             expiration=datetime.timedelta(minutes=expiration_minutes),
